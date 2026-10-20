@@ -5,6 +5,7 @@ RibbonWindow — the narrow always-on-top strip down the right edge of the scree
   • time left / credit
   • time per project
   • Review button
+The minimise button collapses it to just the slider; clicking the slider expands it.
 """
 from __future__ import annotations
 
@@ -13,14 +14,15 @@ from datetime import date, datetime
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
+    QToolButton
 )
 
 from modeswitch import days
 from modeswitch.db import models
 from modeswitch.system_times import first_on_time
 from modeswitch.timeutil import fmt_duration, fmt_signed, now_min, to_hhmm
-from modeswitch.widgets.day_timeline import DayTimeline, RIBBON_WIDTH
+from modeswitch.widgets.day_timeline import DayTimeline, RIBBON_WIDTH, COMPACT_WIDTH
 from modeswitch.widgets.house_button import HouseButton
 
 
@@ -43,9 +45,10 @@ class RibbonWindow(QWidget):
                             | Qt.WindowType.Tool)
         self._today = ""
         self._review = None
+        self._collapsed = False
 
         self._build_ui()
-        self.place()
+        self.set_collapsed(models.get_setting("ribbon_collapsed", "0") == "1")
         self.open_today()
 
         # Heartbeat: last-seen time, day rollover, and the time-left readout
@@ -61,7 +64,8 @@ class RibbonWindow(QWidget):
         root.setSpacing(4)
         root.setContentsMargins(0, 6, 0, 6)
 
-        header = QHBoxLayout()
+        self._header = QWidget()
+        header = QHBoxLayout(self._header)
         header.setContentsMargins(6, 0, 6, 0)
         self._house = HouseButton()
         self._house.toggled.connect(self._on_house_toggled)
@@ -70,13 +74,21 @@ class RibbonWindow(QWidget):
         self._date_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._date_label.setStyleSheet("font-size: 11px; color: #aaa;")
         header.addWidget(self._date_label, stretch=1)
-        root.addLayout(header)
+        collapse = QToolButton()
+        collapse.setText("›")
+        collapse.setFixedSize(20, 20)
+        collapse.setToolTip("Minimise to just the slider")
+        collapse.clicked.connect(lambda: self.set_collapsed(True))
+        header.addWidget(collapse)
+        root.addWidget(self._header)
 
         self.timeline = DayTimeline()
         self.timeline.changed.connect(self._on_timeline_changed)
+        self.timeline.clicked_compact.connect(lambda: self.set_collapsed(False))
         root.addWidget(self.timeline, stretch=1)
 
-        root.addWidget(self._divider())
+        self._divider_line = self._divider()
+        root.addWidget(self._divider_line)
 
         self._status_label = QLabel("")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -91,10 +103,11 @@ class RibbonWindow(QWidget):
         self._review_btn = QPushButton("Review")
         self._review_btn.setCheckable(True)
         self._review_btn.clicked.connect(self._toggle_review)
-        btn_row = QHBoxLayout()
+        self._btn_holder = QWidget()
+        btn_row = QHBoxLayout(self._btn_holder)
         btn_row.setContentsMargins(6, 2, 6, 0)
         btn_row.addWidget(self._review_btn)
-        root.addLayout(btn_row)
+        root.addWidget(self._btn_holder)
 
     @staticmethod
     def _divider() -> QFrame:
@@ -106,8 +119,22 @@ class RibbonWindow(QWidget):
     def place(self) -> None:
         """Dock to the right edge of the primary screen, full height."""
         area = QApplication.primaryScreen().availableGeometry()
-        self.setGeometry(area.right() - RIBBON_WIDTH + 1, area.top(),
-                         RIBBON_WIDTH, area.height())
+        width = COMPACT_WIDTH if self._collapsed else RIBBON_WIDTH
+        self.setFixedWidth(width)
+        self.setGeometry(area.right() - width + 1, area.top(), width, area.height())
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        """Shrink to just the slider, or back to the full ribbon."""
+        self._collapsed = collapsed
+        models.set_setting("ribbon_collapsed", "1" if collapsed else "0")
+        if collapsed and self._review:
+            self._review.hide()
+            self._review_btn.setChecked(False)
+        for w in (self._header, self._divider_line, self._status_label,
+                  self._summary_label, self._btn_holder):
+            w.setVisible(not collapsed)
+        self.timeline.set_compact(collapsed)
+        self.place()
 
     # ------------------------------------------------------------------
     # Day initialisation
@@ -175,6 +202,8 @@ class RibbonWindow(QWidget):
 
     def show_review(self) -> None:
         from modeswitch.windows.review_panel import ReviewPanel
+        if self._collapsed:
+            self.set_collapsed(False)
         if self._review is None:
             self._review = ReviewPanel()
             self._review.data_changed.connect(self._on_review_changed)

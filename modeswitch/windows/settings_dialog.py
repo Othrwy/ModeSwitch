@@ -27,15 +27,22 @@ def _autostart_enabled() -> bool:
     return (STARTUP_FOLDER / SHORTCUT_NAME).exists()
 
 
-def _create_autostart_shortcut() -> None:
+def create_autostart_shortcut() -> None:
     try:
         import win32com.client
         shell = win32com.client.Dispatch("WScript.Shell")
         shortcut = shell.CreateShortCut(str(STARTUP_FOLDER / SHORTCUT_NAME))
-        shortcut.Targetpath = sys.executable
-        if not getattr(sys, "frozen", False):
-            shortcut.Arguments = str(Path(__file__).parent.parent.parent / "main.py")
-        shortcut.WorkingDirectory = str(Path(sys.executable).parent)
+        if getattr(sys, "frozen", False):
+            shortcut.Targetpath = sys.executable
+            shortcut.WorkingDirectory = str(Path(sys.executable).parent)
+        else:
+            # pythonw so no console window is left open at login
+            exe = Path(sys.executable)
+            pythonw = exe.with_name("pythonw.exe")
+            project = Path(__file__).parent.parent.parent
+            shortcut.Targetpath = str(pythonw if pythonw.exists() else exe)
+            shortcut.Arguments = f'"{project / "main.py"}"'
+            shortcut.WorkingDirectory = str(project)
         shortcut.save()
     except Exception as e:
         QMessageBox.warning(None, "Autostart", f"Could not create shortcut:\n{e}")
@@ -110,7 +117,7 @@ class SettingsDialog(QDialog):
 
         if self._autostart_cb.isChecked():
             if not _autostart_enabled():
-                _create_autostart_shortcut()
+                create_autostart_shortcut()
         else:
             _remove_autostart_shortcut()
 

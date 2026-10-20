@@ -1,6 +1,6 @@
 # ModeSwitch — Specification
 
-**Status:** v2 ribbon, timeline and review panel built (2026-10-13). Outlook sync not built — waiting on open Q5. Last updated 2026-10-13.
+**Status:** v2 ribbon, timeline and review panel built (2026-10-13). Minimise, per-day project totals in review, and autostart added (2026-10-20). Outlook sync not built — waiting on open Q5. Last updated 2026-10-20.
 
 This file is the source of truth for what ModeSwitch is meant to do. Read it before changing the code. When a decision is made or a preference stated, record it here (section 11) in the same change as the code.
 
@@ -27,7 +27,8 @@ What changes in v2 **[decided]**: the UI becomes a vertical ribbon with a dragga
 - Windows 11, single user, single machine.
 - Python 3.11, PyQt6, SQLite, pywin32. Packaged with PyInstaller. **[assumed: v2 keeps this stack]**
 - Database at `%LOCALAPPDATA%\ModeSwitch\modeswitch.db`.
-- Runs from the system tray; can launch at Windows startup via a Startup-folder shortcut (existing behaviour, kept).
+- Runs from the system tray.
+- **[decided]** Starts automatically when Patrick logs in to Windows. Done with a shortcut in the user's Startup folder, toggled in Settings. **[assumed]** When run from source the shortcut launches `.venv\Scripts\pythonw.exe main.py` so no console window is left open.
 
 ## 3. The ribbon window
 
@@ -37,6 +38,8 @@ What changes in v2 **[decided]**: the UI becomes a vertical ribbon with a dragga
 - **R4 [decided]** Main area: the day timeline (section 4).
 - **R5 [decided]** Below the timeline: the project summary (section 7).
 - **R6 [decided]** Very bottom: a Review button (section 8).
+- **R7 [decided]** A minimise button collapses the ribbon to just the slider's width, still docked up the right edge. Clicking anywhere on the slider expands it again.
+- **R7a [assumed]** The minimise button is a small `›` at the top right, beside the date. Collapsed, the ribbon is 24px wide and shows sections, meetings, nodes and the now-line, with no text or boxes; hover tooltips still work, but nothing can be edited. Collapsing closes the review panel, and opening Review from the tray expands the ribbon. The collapsed state is remembered across restarts (`ribbon_collapsed` setting).
 
 Layout sketch (not to scale):
 
@@ -161,6 +164,8 @@ How on/off times are detected **[assumed]**:
 - **V4 [decided]** It can scroll further back in time.
 - **V5 [decided]** It contains the table for editing project codes and related settings.
 - **V6 [assumed]** Each day is a column using the same vertical timeline widget as the ribbon, fully editable, with the day's total and credit beneath it. Columns run oldest to newest, left to right, so today sits next to the ribbon. All columns share one time scale. Today is included and stays in step with the ribbon.
+- **V6b [decided]** Beneath each day's slider, the total time per project for that day, in the same `0000 | 2h 35m | A` form as the ribbon summary (P7).
+- **V6c [assumed]** Every column reserves room for as many summary rows as the longest day, so the timelines stay level on the shared time scale.
 - **V6a [assumed]** "Earlier" adds one more week on the left. A day with nothing logged shows "Add day", which creates it starting at 08:30.
 - **V7 [assumed]** The project table covers code, name, colour and the title rules from P5. It replaces the v1 Edit Modes dialog and the projects part of Settings.
 - **V8 [assumed]** The v1 "Holiday" marking for a day moves into the review panel (the H button on each day).
@@ -190,6 +195,9 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 
 | Date | Decision |
 |---|---|
+| 2026-10-20 | Ribbon gets a minimise button that collapses it to the slider's width; clicking the slider expands it (R7). |
+| 2026-10-20 | Review panel shows each day's time per project beneath its slider (V6b). |
+| 2026-10-20 | ModeSwitch starts automatically at login. Startup shortcut switched to `pythonw.exe` and turned on. |
 | 2026-10-13 | v2 built: ribbon, vertical timeline, review panel, start/end detection. Build-time choices are marked [assumed] in sections 4, 5 and 8. Retired v1 UI files moved to `legacy_v1/` rather than deleted, because v1 was never committed. |
 | 2026-10-13 | **Meetings are background, not sections.** The tool logs what time was actually spent on, so overlap is impossible. Outlook meetings are drawn behind the slider; Patrick draws sections over the top. Node drags snap to a meeting's start or end when within 15 min. |
 | 2026-10-13 | This machine uses the new Outlook app, so COM is ruled out. |

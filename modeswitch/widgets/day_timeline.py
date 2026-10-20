@@ -34,6 +34,7 @@ from modeswitch.timeutil import (
 from modeswitch.widgets.time_input import parse_time_input
 
 RIBBON_WIDTH = 160
+COMPACT_WIDTH = 24  # the collapsed ribbon: just the slider
 
 PAD = 14            # space above the first node and below the last
 TRACK_X = 104       # centre of the slider line
@@ -60,6 +61,7 @@ UNASSIGNED_COLOR = "#4a4a4a"
 
 class DayTimeline(QWidget):
     changed = pyqtSignal()   # the day was edited and saved
+    clicked_compact = pyqtSignal()   # clicked while collapsed
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -74,6 +76,8 @@ class DayTimeline(QWidget):
         self._editor: Optional[QLineEdit] = None
         self._editor_node: Optional[int] = None
         self._pulse_phase = 0.0
+        self._compact = False
+        self._track_x = TRACK_X
 
         self._font = QFont("Segoe UI", 8)
         self._bold = QFont("Segoe UI", 8, QFont.Weight.DemiBold)
@@ -112,6 +116,17 @@ class DayTimeline(QWidget):
     def set_range(self, start: Optional[int], end: Optional[int]) -> None:
         """Fix the time span shown, so several days can share one scale."""
         self._fixed_range = (start, end) if start is not None else None
+        self.update()
+
+    def set_compact(self, compact: bool) -> None:
+        """Collapsed: just the slider, no text or boxes, and a click asks to expand."""
+        self._close_editor(commit=False)
+        self._drag = None
+        self._compact = compact
+        self._track_x = COMPACT_WIDTH // 2 if compact else TRACK_X
+        self.setFixedWidth(COMPACT_WIDTH if compact else RIBBON_WIDTH)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if compact
+                       else Qt.CursorShape.ArrowCursor)
         self.update()
 
     def set_wfh(self, wfh: bool) -> None:
@@ -236,7 +251,9 @@ class DayTimeline(QWidget):
             proj = self.projects.get(s.project_id) if s.project_id else None
             color = QColor(KIND_COLOR.get(s.kind) or (proj.color if proj else UNASSIGNED_COLOR))
 
-            p.fillRect(QRect(TRACK_X - TRACK_W // 2, y1, TRACK_W, y2 - y1), color)
+            p.fillRect(QRect(self._track_x - TRACK_W // 2, y1, TRACK_W, y2 - y1), color)
+            if self._compact:
+                continue
 
             # Duration then title, wrapped, cropped to whole lines
             lines = (y2 - y1 - 14) // line_h
@@ -280,7 +297,7 @@ class DayTimeline(QWidget):
         if r0 <= now <= r1:
             y = self._y(now)
             p.setPen(QPen(QColor("#e05555"), 1))
-            p.drawLine(TRACK_X - 12, y, TRACK_X + 12, y)
+            p.drawLine(self._track_x - 12, y, self._track_x + 12, y)
 
     def _paint_nodes(self, p: QPainter) -> None:
         dragged = self._drag["k"] if self._drag and self._drag["what"] == "node" else None
@@ -290,7 +307,7 @@ class DayTimeline(QWidget):
             t = self.model.node_time(k)
             y = self._y(t)
             # Skip a time label that would sit on top of the one above
-            if k == dragged or y - last_label_y >= 11:
+            if not self._compact and (k == dragged or y - last_label_y >= 11):
                 p.setPen(QColor("#ffffff") if k == dragged else QColor("#e0e0e0"))
                 p.drawText(QRect(TEXT_X, y - 7, TEXT_W, 14),
                            int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
@@ -299,7 +316,7 @@ class DayTimeline(QWidget):
             p.setPen(QPen(QColor("#1e1e1e"), 1))
             p.setBrush(QColor("#ffffff"))
             r = NODE_R + 1 if k == dragged else NODE_R
-            p.drawEllipse(QPointF(TRACK_X, y), r, r)
+            p.drawEllipse(QPointF(self._track_x, y), r, r)
 
     # ------------------------------------------------------------------
     # Hit testing
@@ -332,6 +349,9 @@ class DayTimeline(QWidget):
     # Mouse
     # ------------------------------------------------------------------
     def mousePressEvent(self, event):
+        if self._compact:
+            self.clicked_compact.emit()
+            return
         if event.button() != Qt.MouseButton.LeftButton:
             return
         self._close_editor(commit=True)
@@ -350,6 +370,8 @@ class DayTimeline(QWidget):
                           "start0": self.model.sections[idx].start, "moved": False}
 
     def mouseMoveEvent(self, event):
+        if self._compact:
+            return
         y = event.position().y()
         if not self._drag:
             self._update_cursor(event.position().x(), y)
@@ -382,6 +404,8 @@ class DayTimeline(QWidget):
             self._open_editor(d["k"])
 
     def mouseDoubleClickEvent(self, event):
+        if self._compact:
+            return
         if event.button() != Qt.MouseButton.LeftButton or not self.model:
             return
         hit = self._hit(event.position().x(), event.position().y())
@@ -389,7 +413,7 @@ class DayTimeline(QWidget):
             self._split(hit[1], event.position().y())
 
     def contextMenuEvent(self, event):
-        if not self.model:
+        if self._compact or not self.model:
             return
         hit = self._hit(event.pos().x(), event.pos().y())
         i = hit[1] if hit and hit[0] in ("section", "code", "letter") else self._section_at(event.pos().y())

@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from PyQt6.QtCore import Qt, QRect, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QFont, QFontMetrics
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
@@ -22,13 +22,14 @@ from modeswitch.db import models
 from modeswitch.timeutil import fmt_duration, fmt_signed
 from modeswitch.widgets.day_timeline import DayTimeline, RIBBON_WIDTH, LETTERS
 from modeswitch.widgets.house_button import HouseButton
+from modeswitch.windows.ribbon import summary_text
 
 TABLES_HEIGHT = 230
 COLUMN_GAP = 8
 
 
 class DayColumn(QWidget):
-    """Header, timeline and totals for one day."""
+    """Header, timeline, totals and time per project for one day."""
     changed = pyqtSignal()
 
     def __init__(self, day_date: date, parent=None):
@@ -82,6 +83,12 @@ class DayColumn(QWidget):
         self._totals.setStyleSheet("font-size: 11px; color: #aaa;")
         root.addWidget(self._totals)
 
+        self._summary = QLabel()
+        self._summary.setFont(QFont("Consolas", 8))
+        self._summary.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self._summary.setStyleSheet("color: #ccc;")
+        root.addWidget(self._summary)
+
         self.reload()
 
     def has_timeline(self) -> bool:
@@ -111,8 +118,18 @@ class DayColumn(QWidget):
             self._totals.setText(
                 f"{fmt_duration(model.worked_minutes())}  "
                 f"<span style='color:{color}'>{fmt_signed(credit)}</span>")
+            self._summary.setText(summary_text(self.timeline))
         else:
             self._totals.setText("-")
+            self._summary.setText("")
+
+    def summary_lines(self) -> int:
+        text = self._summary.text()
+        return text.count("\n") + 1 if text else 0
+
+    def set_summary_lines(self, lines: int) -> None:
+        """Every column reserves the same space, so the timelines stay level."""
+        self._summary.setFixedHeight(lines * QFontMetrics(self._summary.font()).lineSpacing())
 
     def _on_timeline_changed(self) -> None:
         self.reload()
@@ -289,6 +306,9 @@ class ReviewPanel(QWidget):
 
     def _sync_ranges(self) -> None:
         """Put every day on the same time scale so they line up side by side."""
+        lines = max((c.summary_lines() for c in self._columns), default=0)
+        for col in self._columns:
+            col.set_summary_lines(lines)
         models_ = [c.timeline.model for c in self._columns
                    if c.has_timeline() and c.timeline.model and c.timeline.model.sections]
         if not models_:
