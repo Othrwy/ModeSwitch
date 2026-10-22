@@ -1,27 +1,30 @@
 """
-ReviewPanel — opens to the left of the ribbon.
+ReviewPanel — opens beside the ribbon, on the side away from the screen edge.
 
-Top:    one editable timeline per working day, this week and last week,
-        oldest on the left; "Earlier" adds another week.
-Bottom: the projects table and the title rules table.
+Top:    one editable timeline per past working day, this week and last week,
+        oldest on the left; "Earlier" adds another week. Today is left out, because
+        it is already on the ribbon.
+Bottom: the projects table and the credit chart.
 """
 from __future__ import annotations
 
 from datetime import date, timedelta
 
 from PyQt6.QtCore import Qt, QRect, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontMetrics
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QScreen
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
-    QColorDialog, QMessageBox, QInputDialog, QGroupBox, QToolButton
+    QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
+    QColorDialog, QMessageBox, QGroupBox
 )
 
 from modeswitch import days
 from modeswitch.db import models
 from modeswitch.timeutil import fmt_duration, fmt_signed
-from modeswitch.widgets.day_timeline import DayTimeline, RIBBON_WIDTH, LETTERS
+from modeswitch.widgets.credit_chart import ChartDay, CreditChart
+from modeswitch.widgets.day_timeline import DayTimeline, RIBBON_WIDTH
 from modeswitch.widgets.house_button import HouseButton
+from modeswitch.widgets.icon_buttons import SandwichButton, SunButton
 from modeswitch.windows.ribbon import summary_text
 
 TABLES_HEIGHT = 230
@@ -47,16 +50,15 @@ class DayColumn(QWidget):
         self._house = HouseButton(size=20)
         self._house.toggled.connect(self._on_house_toggled)
         header.addWidget(self._house)
+        self._lunch = SandwichButton(size=20)
+        self._lunch.toggled.connect(lambda on: self.timeline.set_lunch(on))
+        header.addWidget(self._lunch)
         label = QLabel(day_date.strftime("%a %d %b"))
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         is_today = day_date == date.today()
         label.setStyleSheet(f"font-size: 11px; color: {'#fff' if is_today else '#aaa'};")
         header.addWidget(label, stretch=1)
-        self._holiday_btn = QToolButton()
-        self._holiday_btn.setText("H")
-        self._holiday_btn.setCheckable(True)
-        self._holiday_btn.setFixedSize(20, 20)
-        self._holiday_btn.setToolTip("Mark as holiday")
+        self._holiday_btn = SunButton(size=20)
         self._holiday_btn.clicked.connect(self._on_holiday_clicked)
         header.addWidget(self._holiday_btn)
         root.addLayout(header)
@@ -102,6 +104,7 @@ class DayColumn(QWidget):
 
         self._holiday_btn.setChecked(holiday)
         self._house.setVisible(show_timeline)
+        self._lunch.setVisible(show_timeline)
         self.timeline.setVisible(show_timeline)
         self._placeholder.setVisible(not show_timeline)
         self._placeholder_label.setText("Holiday" if holiday else "No data")
@@ -109,10 +112,11 @@ class DayColumn(QWidget):
 
         if show_timeline:
             self.timeline.load(day)
-            self._house.blockSignals(True)
-            self._house.setChecked(day.wfh)
-            self._house.blockSignals(False)
             model = self.timeline.model
+            for button, checked in ((self._house, day.wfh), (self._lunch, model.has_lunch())):
+                button.blockSignals(True)
+                button.setChecked(checked)
+                button.blockSignals(False)
             credit = model.credit(days.target_minutes())
             color = "#f4a261" if credit >= 0 else "#e07070"
             self._totals.setText(
@@ -151,7 +155,7 @@ class DayColumn(QWidget):
 
 
 class ReviewPanel(QWidget):
-    data_changed = pyqtSignal()   # a day, project or rule was edited here
+    data_changed = pyqtSignal()   # a day or project was edited here
 
     def __init__(self):
         super().__init__()
@@ -182,7 +186,7 @@ class ReviewPanel(QWidget):
         title.setStyleSheet("font-size: 13px; color: #aaa;")
         bar.addWidget(title)
         bar.addStretch()
-        close = QPushButton("Close ▶")
+        close = QPushButton("Close")
         close.clicked.connect(self.hide)
         bar.addWidget(close)
         root.addLayout(bar)
@@ -201,8 +205,8 @@ class ReviewPanel(QWidget):
         root.addWidget(self._scroll, stretch=1)
 
         tables = QHBoxLayout()
-        tables.addWidget(self._build_projects_group(), stretch=3)
-        tables.addWidget(self._build_rules_group(), stretch=2)
+        tables.addWidget(self._build_projects_group(), stretch=2)
+        tables.addWidget(self._build_credit_group(), stretch=3)
         holder = QWidget()
         holder.setLayout(tables)
         tables.setContentsMargins(0, 0, 0, 0)
@@ -227,41 +231,34 @@ class ReviewPanel(QWidget):
         vbox.addWidget(add, alignment=Qt.AlignmentFlag.AlignLeft)
         return group
 
-    def _build_rules_group(self) -> QGroupBox:
-        group = QGroupBox("Title rules — a section whose title contains the text gets the project")
+    def _build_credit_group(self) -> QGroupBox:
+        group = QGroupBox("Credit — hours worked each day (dashed) against the nominal day (solid)")
         vbox = QVBoxLayout(group)
-        self._rule_table = QTableWidget()
-        self._rule_table.setColumnCount(4)
-        self._rule_table.setHorizontalHeaderLabels(["Title contains", "Code", "Letter", ""])
-        self._rule_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self._rule_table.verticalHeader().setVisible(False)
-        self._rule_table.setColumnWidth(1, 70)
-        self._rule_table.setColumnWidth(2, 50)
-        self._rule_table.setColumnWidth(3, 30)
-        self._rule_table.itemChanged.connect(self._on_rule_item_changed)
-        vbox.addWidget(self._rule_table)
-        add = QPushButton("+ Add rule")
-        add.clicked.connect(self._add_rule)
-        vbox.addWidget(add, alignment=Qt.AlignmentFlag.AlignLeft)
+        self._chart = CreditChart()
+        vbox.addWidget(self._chart)
         return group
 
-    def place_beside(self, ribbon_geometry: QRect) -> None:
-        """Fill the space to the left of the ribbon, as wide as the days need."""
-        area = QApplication.primaryScreen().availableGeometry()
+    def place_beside(self, ribbon_geometry: QRect, screen: QScreen, edge: str) -> None:
+        """Fill the space beside the ribbon, as wide as the days need."""
+        area = screen.availableGeometry()
         wanted = len(self._visible_dates()) * (RIBBON_WIDTH + COLUMN_GAP) + 24
-        width = max(720, min(wanted, ribbon_geometry.left() - area.left()))
-        self.setGeometry(ribbon_geometry.left() - width, ribbon_geometry.top(),
-                         width, ribbon_geometry.height())
+        if edge == "right":
+            width = max(720, min(wanted, ribbon_geometry.left() - area.left()))
+            left = ribbon_geometry.left() - width
+        else:
+            width = max(720, min(wanted, area.right() - ribbon_geometry.right()))
+            left = ribbon_geometry.right() + 1
+        self.setGeometry(left, ribbon_geometry.top(), width, ribbon_geometry.height())
 
     # ------------------------------------------------------------------
     # Day columns
     # ------------------------------------------------------------------
     def _visible_dates(self) -> list[date]:
-        """Working days from the Monday `_weeks_back` weeks ago up to today."""
+        """Working days from the Monday `_weeks_back` weeks ago up to yesterday."""
         today = date.today()
         monday = today - timedelta(days=today.weekday() + 7 * self._weeks_back)
         working = models.get_day_list_setting("working_days")
-        count = (today - monday).days + 1
+        count = (today - monday).days
         return [d for d in (monday + timedelta(days=i) for i in range(count))
                 if d.isoweekday() in working]
 
@@ -297,8 +294,8 @@ class ReviewPanel(QWidget):
             self._days_layout.addWidget(col)
 
         self._sync_ranges()
+        self._update_chart()
         self._populate_projects()
-        self._populate_rules()
 
     def _show_earlier(self) -> None:
         self._weeks_back += 1
@@ -324,17 +321,29 @@ class ReviewPanel(QWidget):
             if col.date_str == date_str:
                 col.reload()
         self._sync_ranges()
-        self._populate_rules()
+        self._update_chart()
 
     def _reload_all(self) -> None:
         for col in self._columns:
             col.reload()
         self._sync_ranges()
+        self._update_chart()
 
     def _on_day_changed(self) -> None:
         self._sync_ranges()
-        self._populate_rules()
+        self._update_chart()
         self.data_changed.emit()
+
+    def _update_chart(self) -> None:
+        rows = []
+        for col in self._columns:
+            if col.has_timeline():
+                rows.append(ChartDay(col.day_date, col.timeline.model.worked_minutes()))
+            else:
+                day = models.get_day(col.date_str)
+                rows.append(ChartDay(col.day_date, None,
+                                     "Holiday" if day and day.is_holiday else "No data"))
+        self._chart.set_days(rows, days.target_minutes())
 
     # ------------------------------------------------------------------
     # Projects table
@@ -364,7 +373,6 @@ class ReviewPanel(QWidget):
 
     def _projects_edited(self) -> None:
         self._populate_projects()
-        self._populate_rules()
         self._reload_all()
         self.data_changed.emit()
 
@@ -406,68 +414,3 @@ class ReviewPanel(QWidget):
         from modeswitch.dialogs.add_project import AddProjectDialog
         if AddProjectDialog(self).exec():
             self._projects_edited()
-
-    # ------------------------------------------------------------------
-    # Title rules table
-    # ------------------------------------------------------------------
-    def _populate_rules(self) -> None:
-        projects = models.get_all_projects()
-        self._rule_table.blockSignals(True)
-        self._rule_table.setRowCount(0)
-        for rule in models.get_rules():
-            row = self._rule_table.rowCount()
-            self._rule_table.insertRow(row)
-
-            pattern_item = QTableWidgetItem(rule.pattern)
-            pattern_item.setData(Qt.ItemDataRole.UserRole, rule.id)
-            self._rule_table.setItem(row, 0, pattern_item)
-
-            code_box = QComboBox()
-            for p in projects:
-                code_box.addItem(p.code, p.id)
-            code_box.setCurrentIndex(code_box.findData(rule.project_id))
-            code_box.activated.connect(
-                lambda _, r=rule, box=code_box: self._save_rule(r.pattern, box.currentData(), r.category))
-            self._rule_table.setCellWidget(row, 1, code_box)
-
-            letter_box = QComboBox()
-            letter_box.addItems(LETTERS)
-            letter_box.setCurrentText(rule.category)
-            letter_box.activated.connect(
-                lambda _, r=rule, box=letter_box: self._save_rule(r.pattern, r.project_id, box.currentText()))
-            self._rule_table.setCellWidget(row, 2, letter_box)
-
-            del_btn = QPushButton("✕")
-            del_btn.setToolTip("Delete rule")
-            del_btn.clicked.connect(lambda _, r=rule: self._delete_rule(r.id))
-            self._rule_table.setCellWidget(row, 3, del_btn)
-        self._rule_table.blockSignals(False)
-
-    def _save_rule(self, pattern: str, project_id: int, category: str) -> None:
-        models.upsert_rule(pattern, project_id, category)
-        self._populate_rules()
-
-    def _delete_rule(self, rule_id: int) -> None:
-        models.delete_rule(rule_id)
-        self._populate_rules()
-
-    def _on_rule_item_changed(self, item: QTableWidgetItem) -> None:
-        if item.column() != 0:
-            return
-        rule_id = item.data(Qt.ItemDataRole.UserRole)
-        rule = next((r for r in models.get_rules() if r.id == rule_id), None)
-        new_pattern = item.text().strip().lower()
-        if rule and new_pattern and new_pattern != rule.pattern:
-            models.delete_rule(rule.id)
-            models.upsert_rule(new_pattern, rule.project_id, rule.category)
-        QTimer.singleShot(0, self._populate_rules)
-
-    def _add_rule(self) -> None:
-        projects = models.get_recent_projects()
-        if not projects:
-            QMessageBox.information(self, "Title rules", "Add a project first.")
-            return
-        text, ok = QInputDialog.getText(self, "New title rule", "Title contains:")
-        if ok and text.strip():
-            models.upsert_rule(text, projects[0].id, "A")
-            self._populate_rules()

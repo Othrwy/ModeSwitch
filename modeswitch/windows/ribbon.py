@@ -1,38 +1,52 @@
 """
-RibbonWindow — the narrow always-on-top strip down the right edge of the screen:
+RibbonWindow — the narrow always-on-top strip down the left or right edge of a monitor:
   • house button (working from home) and today's date
   • today's timeline
   • time left / credit
   • time per project
   • Review button
 The minimise button collapses it to just the slider; clicking the slider expands it.
+
+It registers as a Windows app bar, so it reserves its strip of the screen and other
+windows snap to it rather than sliding underneath. Drag the header to move it to
+another edge or monitor; it snaps to the nearest left or right edge.
 """
 from __future__ import annotations
 
+from ctypes import wintypes
 from datetime import date, datetime
+from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QTimer, QRect, QPoint, QEvent
+from PyQt6.QtGui import QFont, QScreen
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
-    QToolButton
+    QToolButton, QRubberBand
 )
 
 from modeswitch import days
+from modeswitch.appbar import (
+    AppBar, monitor_rects, CALLBACK_MSG, TASKBAR_CREATED_MSG, ABN_POSCHANGED, ABN_FULLSCREENAPP,
+)
 from modeswitch.db import models
 from modeswitch.system_times import first_on_time
 from modeswitch.timeutil import fmt_duration, fmt_signed, now_min, to_hhmm
 from modeswitch.widgets.day_timeline import DayTimeline, RIBBON_WIDTH, COMPACT_WIDTH
 from modeswitch.widgets.house_button import HouseButton
+from modeswitch.widgets.icon_buttons import SandwichButton
 
 
 def summary_text(timeline: DayTimeline) -> str:
-    """One line per project and letter: '0000 | 2h 35m | A'."""
+    """One line per project and letter: '0000 | 2h 35m | A'.
+    The letter is left off when every row has the same one."""
+    rows = timeline.model.summary()
+    show_letter = len({category for _, category, _ in rows}) > 1
     lines = []
-    for project_id, category, minutes in timeline.model.summary():
+    for project_id, category, minutes in rows:
         proj = timeline.projects.get(project_id) if project_id else None
         code = proj.code if proj else "----"
-        lines.append(f"{code:<4} | {fmt_duration(minutes):>6} | {category}")
+        line = f"{code:<4} | {fmt_duration(minutes):>6}"
+        lines.append(f"{line} | {category}" if show_letter else line)
     return "\n".join(lines)
 
 
@@ -46,8 +60,16 @@ class RibbonWindow(QWidget):
         self._today = ""
         self._review = None
         self._collapsed = False
+        self._appbar: Optional[AppBar] = None
+        self._docked_on = None          # (monitor rect, edge) the app bar was last given
+        self._drag_offset: Optional[QPoint] = None
+        self._drag_start = QPoint()
+        self._dragging = False
+        self._drop_preview = QRubberBand(QRubberBand.Shape.Rectangle)
 
         self._build_ui()
+        QApplication.instance().screenAdded.connect(self._on_screens_changed)
+        QApplication.instance().screenRemoved.connect(self._on_screens_changed)
         self.set_collapsed(models.get_setting("ribbon_collapsed", "0") == "1")
         self.open_today()
 
@@ -65,21 +87,28 @@ class RibbonWindow(QWidget):
         root.setContentsMargins(0, 6, 0, 6)
 
         self._header = QWidget()
+        self._header.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._header.setToolTip("Drag to move to another edge or monitor")
+        self._header.installEventFilter(self)
         header = QHBoxLayout(self._header)
         header.setContentsMargins(6, 0, 6, 0)
         self._house = HouseButton()
         self._house.toggled.connect(self._on_house_toggled)
         header.addWidget(self._house)
+        self._lunch = SandwichButton()
+        self._lunch.toggled.connect(lambda on: self.timeline.set_lunch(on))
+        header.addWidget(self._lunch)
         self._date_label = QLabel()
         self._date_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._date_label.setStyleSheet("font-size: 11px; color: #aaa;")
         header.addWidget(self._date_label, stretch=1)
-        collapse = QToolButton()
-        collapse.setText("›")
-        collapse.setFixedSize(20, 20)
-        collapse.setToolTip("Minimise to just the slider")
-        collapse.clicked.connect(lambda: self.set_collapsed(True))
-        header.addWidget(collapse)
+        self._collapse_btn = QToolButton()
+        self._collapse_btn.setText("−")
+        self._collapse_btn.setFixedSize(20, 20)
+        self._collapse_btn.setCursor(Qt.CursorShape.ArrowCursor)
+        self._collapse_btn.setToolTip("Minimise to just the slider")
+        self._collapse_btn.clicked.connect(lambda: self.set_collapsed(True))
+        header.addWidget(self._collapse_btn)
         root.addWidget(self._header)
 
         self.timeline = DayTimeline()
@@ -116,12 +145,133 @@ class RibbonWindow(QWidget):
         line.setStyleSheet("color: #444;")
         return line
 
+    # ------------------------------------------------------------------
+    # Docking
+    # ------------------------------------------------------------------
+    def dock_edge(self) -> str:
+        return "left" if models.get_setting("dock_edge", "right") == "left" else "right"
+
+    def dock_screen(self) -> QScreen:
+        name = models.get_setting("dock_screen", "")
+        return next((s for s in QApplication.screens() if s.name() == name),
+                    QApplication.primaryScreen())
+
     def place(self) -> None:
-        """Dock to the right edge of the primary screen, full height."""
-        area = QApplication.primaryScreen().availableGeometry()
+        """Dock to the chosen edge of the chosen monitor, full height, reserving the space."""
         width = COMPACT_WIDTH if self._collapsed else RIBBON_WIDTH
+        edge = self.dock_edge()
+        self._review_btn.setText("◀  Review" if edge == "right" else "Review  ▶")
+        self.timeline.set_edge(edge)
         self.setFixedWidth(width)
-        self.setGeometry(area.right() - width + 1, area.top(), width, area.height())
+        if not self.isVisible():
+            return   # showEvent places it
+
+        screen = self.dock_screen()
+        geo, dpr = screen.geometry(), screen.devicePixelRatio()
+        # Qt keeps each screen's top-left in physical pixels and scales only its size
+        mon, work = monitor_rects(geo.left(), geo.top())
+        target = (mon[0], work[1], mon[2], work[3])
+        native_w = round(width * dpr)
+
+        rc = None
+        if QApplication.platformName() == "windows":
+            if self._appbar is None:
+                self._appbar = AppBar(int(self.winId()))
+            if self._docked_on and self._docked_on != (mon, edge):
+                self._appbar.remove()     # moving monitor or edge: register afresh
+            rc = self._appbar.dock(target, edge, native_w)
+            self._docked_on = (mon, edge) if rc else None
+            if rc is None:
+                QTimer.singleShot(5000, self.place)   # at login the shell may not be up yet
+        if rc is None:   # not on Windows, or the shell is not ready yet: just float there
+            left = target[0] if edge == "left" else target[2] - native_w
+            rc = (left, target[1], left + native_w, target[3])
+
+        self.setGeometry(QRect(round(geo.left() + (rc[0] - geo.left()) / dpr),
+                               round(geo.top() + (rc[1] - geo.top()) / dpr),
+                               width, round((rc[3] - rc[1]) / dpr)))
+        if self._review and self._review.isVisible():
+            self._review.place_beside(self.geometry(), screen, edge)
+
+    def undock(self) -> None:
+        """Give the reserved space back to other windows."""
+        if self._appbar:
+            self._appbar.remove()
+        self._docked_on = None
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self.place)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.undock()
+
+    def nativeEvent(self, event_type, message):
+        if bytes(event_type) == b"windows_generic_MSG":
+            msg = wintypes.MSG.from_address(int(message))
+            if msg.message == CALLBACK_MSG and self._appbar:
+                if msg.wParam == ABN_POSCHANGED:
+                    QTimer.singleShot(0, self.place)
+                elif msg.wParam == ABN_FULLSCREENAPP:
+                    # Step back while a full-screen app (a presentation) is in front
+                    self._appbar.set_topmost(not msg.lParam)
+            elif msg.message == TASKBAR_CREATED_MSG and self._appbar:
+                # Explorer restarted and forgot every app bar
+                self._appbar.registered = False
+                self._docked_on = None
+                QTimer.singleShot(1000, self.place)
+        return False, 0
+
+    def _on_screens_changed(self, _screen) -> None:
+        if self.isVisible():
+            QTimer.singleShot(500, self.place)
+
+    # ------------------------------------------------------------------
+    # Dragging by the header to another edge or monitor
+    # ------------------------------------------------------------------
+    def _drop_target(self, pos: QPoint) -> tuple[QScreen, str]:
+        screen = QApplication.screenAt(pos) or self.screen()
+        edge = "left" if pos.x() < screen.geometry().center().x() else "right"
+        return screen, edge
+
+    def eventFilter(self, obj, event):
+        if obj is not self._header:
+            return super().eventFilter(obj, event)
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.globalPosition().toPoint()
+            self._drag_offset = self._drag_start - self.pos()
+            return True
+        if kind == QEvent.Type.MouseMove and self._drag_offset is not None:
+            pos = event.globalPosition().toPoint()
+            if not self._dragging:
+                if (pos - self._drag_start).manhattanLength() < QApplication.startDragDistance():
+                    return True
+                self._dragging = True
+                self._header.setCursor(Qt.CursorShape.ClosedHandCursor)
+                if self._review:
+                    self._review.hide()
+                    self._review_btn.setChecked(False)
+            self.move(pos - self._drag_offset)
+            screen, edge = self._drop_target(pos)
+            area = screen.availableGeometry()
+            left = area.left() if edge == "left" else area.right() - self.width() + 1
+            self._drop_preview.setGeometry(left, area.top(), self.width(), area.height())
+            self._drop_preview.show()
+            return True
+        if kind == QEvent.Type.MouseButtonRelease and self._drag_offset is not None:
+            self._drag_offset = None
+            if self._dragging:
+                self._dragging = False
+                self._drop_preview.hide()
+                self._header.setCursor(Qt.CursorShape.OpenHandCursor)
+                screen, edge = self._drop_target(event.globalPosition().toPoint())
+                models.set_setting("dock_screen", screen.name())
+                models.set_setting("dock_edge", edge)
+                self.place()
+            return True
+        return super().eventFilter(obj, event)
 
     def set_collapsed(self, collapsed: bool) -> None:
         """Shrink to just the slider, or back to the full ribbon."""
@@ -149,17 +299,23 @@ class RibbonWindow(QWidget):
         day = days.ensure_day(self._today, start=start, in_source="detected")
 
         self._date_label.setText(today.strftime("%a %d %b"))
-        self._house.blockSignals(True)
-        self._house.setChecked(day.wfh)
-        self._house.blockSignals(False)
         self.timeline.load(day)
+        self._sync_header_buttons()
         self._refresh_readouts()
+
+    def _sync_header_buttons(self) -> None:
+        for button, checked in ((self._house, self.timeline.day.wfh),
+                                (self._lunch, self.timeline.model.has_lunch())):
+            button.blockSignals(True)
+            button.setChecked(checked)
+            button.blockSignals(False)
 
     def _tick(self) -> None:
         if date.today().isoformat() != self._today:
             self.open_today()
             return
         models.update_day(self.timeline.day.id, last_seen=datetime.now().strftime("%H:%M"))
+        self.timeline.refresh_meetings()
         self._refresh_readouts()
 
     # ------------------------------------------------------------------
@@ -207,18 +363,22 @@ class RibbonWindow(QWidget):
         if self._review is None:
             self._review = ReviewPanel()
             self._review.data_changed.connect(self._on_review_changed)
-        self._review.place_beside(self.geometry())
+        self._review.place_beside(self.geometry(), self.dock_screen(), self.dock_edge())
         self._review.refresh()
         self._review.show()
         self._review.raise_()
         self._review_btn.setChecked(True)
 
+    def on_meetings_synced(self, changed: list[str]) -> None:
+        self.timeline.refresh_meetings()
+        if self._review and self._review.isVisible():
+            for date_str in changed:
+                self._review.reload_day(date_str)
+
     def _on_review_changed(self) -> None:
         """Something was edited in the review panel; pick up today's changes."""
         self.timeline.reload()
-        self._house.blockSignals(True)
-        self._house.setChecked(self.timeline.day.wfh)
-        self._house.blockSignals(False)
+        self._sync_header_buttons()
         self._refresh_readouts()
 
     # ------------------------------------------------------------------

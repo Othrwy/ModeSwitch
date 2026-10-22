@@ -122,9 +122,13 @@ class DayModel:
         """Move one node; the sections either side change length.
 
         The start-of-work and end-of-work nodes carry their commute section
-        along with them instead of squeezing it.
+        along with them instead of squeezing it, and the start-of-lunch node
+        carries the whole lunch, keeping its length.
         """
         n = len(self.sections)
+        if k < n and self.sections[k].kind == LUNCH:
+            self.move_section(k, t)
+            return
         if k == 1 and self._has_morning_commute():
             self._set_work_start(t)
             return
@@ -212,6 +216,58 @@ class DayModel:
         else:
             self.sections[i].start = s.start
         return True
+
+    # ------------------------------------------------------------------
+    # Lunch on / off
+    # ------------------------------------------------------------------
+    def has_lunch(self) -> bool:
+        return any(s.kind == LUNCH for s in self.sections)
+
+    def remove_lunch(self) -> None:
+        """Take lunch off the day; the section above grows into the space."""
+        for i, s in enumerate(self.sections):
+            if s.kind == LUNCH:
+                self.sections.pop(i)
+                if i > 0 and self.sections[i - 1].kind == WORK:
+                    self.sections[i - 1].end = s.end
+                else:
+                    self.sections[i].start = s.start
+                return
+
+    def add_lunch(self, start: int, length: int) -> None:
+        """Put lunch back at `start`, cutting it out of whatever work sections are
+        there. Moved inside the working day if it does not fit."""
+        if self.has_lunch() or not self.sections:
+            return
+        lo, hi = self.work_start + MIN_LEN, self.work_end - MIN_LEN
+        length = max(MIN_LEN, min(length, hi - lo))
+        if hi - lo < length:
+            return
+        start = max(lo, min(hi - length, start))
+        end = start + length
+
+        out: list[Section] = []
+        for s in self.sections:
+            if s.end <= start or s.start >= end:
+                out.append(s)
+                continue
+            if s.start < start:
+                out.append(Section(s.kind, s.start, start, s.project_id, s.category,
+                                   s.title, s.title_manual))
+            if not any(x.kind == LUNCH for x in out):
+                out.append(Section(LUNCH, start, end))
+            if s.end > end:
+                out.append(Section(s.kind, end, s.end, s.project_id, s.category,
+                                   s.title, s.title_manual))
+        # A sliver shorter than MIN_LEN either side of lunch becomes part of lunch
+        i = next(k for k, x in enumerate(out) if x.kind == LUNCH)
+        if i > 0 and out[i - 1].duration < MIN_LEN:
+            sliver = out.pop(i - 1)
+            i -= 1
+            out[i].start = sliver.start
+        if i + 1 < len(out) and out[i + 1].duration < MIN_LEN:
+            out[i].end = out.pop(i + 1).end
+        self.sections = out
 
     # ------------------------------------------------------------------
     # Commute

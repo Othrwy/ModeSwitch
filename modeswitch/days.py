@@ -7,7 +7,7 @@ from datetime import date
 from typing import Optional
 
 from modeswitch.db import models
-from modeswitch.db.models import Day, TimeBlock
+from modeswitch.db.models import Day, TimeBlock, Meeting
 from modeswitch.day_model import (
     DayModel, Section, build_default_day, refresh_titles, apply_rules,
 )
@@ -89,3 +89,23 @@ def finalise_past_days(today_str: str) -> None:
         model.set_work_end(to_min(day.last_seen))
         day.out_source = "detected"
         save_model(day, model)
+
+
+def store_meetings(by_date: dict[str, list[Meeting]]) -> list[str]:
+    """Replace the cached meetings for each day given; returns the days that changed.
+
+    Past days with sections are re-saved so their titles and smart defaults follow the
+    new meetings. Today is left to the ribbon's timeline, which may be mid-edit.
+    """
+    today = date.today().isoformat()
+    changed = []
+    for date_str, meetings in by_date.items():
+        new = sorted((to_min(m.start_time), to_min(m.end_time), m.title) for m in meetings)
+        if new == sorted(load_meetings(date_str)):
+            continue
+        models.replace_meetings(date_str, meetings)
+        changed.append(date_str)
+        day = models.get_day(date_str)
+        if date_str != today and day and models.get_blocks_for_day(day.id):
+            save_model(day, load_model(day))
+    return changed

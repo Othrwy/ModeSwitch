@@ -3,14 +3,18 @@ QApplication + QSystemTrayIcon wrapper.
 """
 from __future__ import annotations
 
+import queue
 import sys
+import threading
+from datetime import datetime
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter
 from PyQt6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QMessageBox
 )
 
+from modeswitch import calendar_sync, days
 from modeswitch.db.schema import init_db
 from modeswitch.timeutil import now_min, to_hhmm
 from modeswitch.windows.ribbon import RibbonWindow
@@ -28,6 +32,67 @@ def _make_default_icon() -> QIcon:
     return QIcon(px)
 
 
+SYNC_INTERVAL_MS = 5 * 60_000
+
+
+class CalendarSyncer(QObject):
+    """Fetches meetings on a background thread and stores them on the main one.
+
+    One long-lived worker thread does every fetch, because the COM link to classic
+    Outlook belongs to the thread that opened it.
+    """
+    synced = pyqtSignal(list)                # dates whose meetings changed
+    status_changed = pyqtSignal(str, bool)   # text, and whether to pop up a warning
+    _fetched = pyqtSignal(str, object, bool)
+    _failed = pyqtSignal(str, bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._busy = False
+        self._jobs: queue.Queue[bool] = queue.Queue()
+        self._fetched.connect(self._on_fetched)
+        self._failed.connect(self._on_failed)
+        threading.Thread(target=self._worker, daemon=True).start()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(lambda: self.sync(user_started=False))
+        self._timer.start(SYNC_INTERVAL_MS)
+        QTimer.singleShot(2000, lambda: self.sync(user_started=False))
+
+    def sync(self, user_started: bool) -> None:
+        """user_started: from the tray menu, so report a failure with a pop-up."""
+        if self._busy:
+            return
+        self._busy = True
+        self._jobs.put(user_started)
+
+    def _worker(self) -> None:
+        outlook = calendar_sync.OutlookReader()
+        while True:
+            user_started = self._jobs.get()
+            try:
+                first, last = calendar_sync.sync_range()
+                source, by_date = calendar_sync.fetch_meetings(first, last, outlook)
+                self._fetched.emit(source, by_date, user_started)
+            except Exception as e:
+                self._failed.emit(f"Calendar sync failed: {e}", user_started)
+
+    def _on_fetched(self, source: str, by_date, user_started: bool) -> None:
+        self._busy = False
+        changed = days.store_meetings(by_date)
+        self.status_changed.emit(f"Calendar synced from {source} at {datetime.now():%H:%M}",
+                                 False)
+        if user_started:
+            total = sum(len(m) for m in by_date.values())
+            self.status_changed.emit(f"Calendar synced from {source}: {total} meetings "
+                                     f"since last Monday week", True)
+        self.synced.emit(changed)
+
+    def _on_failed(self, message: str, user_started: bool) -> None:
+        # Background failures (offline, Outlook busy) only update the tooltip
+        self._busy = False
+        self.status_changed.emit(message, user_started)
+
+
 class App:
     def __init__(self):
         self.qapp = QApplication.instance() or QApplication(sys.argv)
@@ -40,9 +105,14 @@ class App:
 
         self.ribbon = RibbonWindow()
         self.ribbon.show()
+        self.qapp.aboutToQuit.connect(self.ribbon.undock)
 
         self._tray = self._build_tray()
         self._tray.show()
+
+        self.calendar = CalendarSyncer(self.qapp)
+        self.calendar.synced.connect(self.ribbon.on_meetings_synced)
+        self.calendar.status_changed.connect(self._on_calendar_status)
 
     # ------------------------------------------------------------------
     def _build_tray(self) -> QSystemTrayIcon:
@@ -62,6 +132,9 @@ class App:
 
         menu.addSeparator()
 
+        sync_action = menu.addAction("Sync calendar now")
+        sync_action.triggered.connect(lambda: self.calendar.sync(user_started=True))
+
         settings_action = menu.addAction("Settings")
         settings_action.triggered.connect(self._open_settings)
 
@@ -74,12 +147,20 @@ class App:
         tray.activated.connect(self._on_tray_activated)
         return tray
 
+    def _on_calendar_status(self, text: str, popup: bool) -> None:
+        failed = text.startswith("Calendar sync failed")
+        if popup:
+            icon = (QSystemTrayIcon.MessageIcon.Warning if failed
+                    else QSystemTrayIcon.MessageIcon.Information)
+            self._tray.showMessage("ModeSwitch", text, icon)
+        if failed or not popup:
+            self._tray.setToolTip(f"ModeSwitch\n{text}")
+
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self._show_ribbon()
 
     def _show_ribbon(self) -> None:
-        self.ribbon.place()
         self.ribbon.show()
         self.ribbon.raise_()
 

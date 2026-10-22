@@ -20,7 +20,7 @@ import math
 from datetime import date
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QRect, QRectF, QPointF, QTimer, QEvent, pyqtSignal
+from PyQt6.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QTimer, QEvent, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QFont, QFontMetrics, QPen
 from PyQt6.QtWidgets import QWidget, QMenu, QLineEdit, QToolTip, QInputDialog
 
@@ -53,6 +53,7 @@ MEETING_SNAP = 15   # a dragged node jumps to a meeting edge within this many mi
 ALERT_MINS = 30     # meetings starting this soon pulse
 
 LETTERS = ["A", "B", "C", "D"]
+LUNCH_DEFAULT_START = 12 * 60   # where lunch goes when it is put back on a day
 
 KIND_COLOR = {LUNCH: "#FFA500", COMMUTE: "#808080"}
 KIND_LABEL = {LUNCH: "Lunch", COMMUTE: "Commute"}
@@ -77,6 +78,8 @@ class DayTimeline(QWidget):
         self._editor_node: Optional[int] = None
         self._pulse_phase = 0.0
         self._compact = False
+        self._edge = "right"           # the screen edge this timeline sits against
+        self._hover: Optional[QPoint] = None
         self._track_x = TRACK_X
 
         self._font = QFont("Segoe UI", 8)
@@ -113,10 +116,31 @@ class DayTimeline(QWidget):
             if fresh:
                 self.load(fresh)
 
+    def refresh_meetings(self) -> None:
+        """Pick up meetings a calendar sync stored, and the titles they give sections."""
+        if not self.day or self._drag or self._editor:
+            return
+        fresh = days.load_meetings(self.day.date)
+        if fresh == self.meetings:
+            return
+        self.meetings = fresh
+        refresh_titles(self.model, self.meetings)
+        self._on_clock()
+        self._commit()
+
     def set_range(self, start: Optional[int], end: Optional[int]) -> None:
         """Fix the time span shown, so several days can share one scale."""
         self._fixed_range = (start, end) if start is not None else None
         self.update()
+
+    def set_edge(self, edge: str) -> None:
+        """Hover titles only show on the half away from the screen edge."""
+        self._edge = edge
+        self.update()
+
+    def _inner_side(self, x: float) -> bool:
+        half = self.width() / 2
+        return x < half if self._edge == "right" else x >= half
 
     def set_compact(self, compact: bool) -> None:
         """Collapsed: just the slider, no text or boxes, and a click asks to expand."""
@@ -128,6 +152,17 @@ class DayTimeline(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor if compact
                        else Qt.CursorShape.ArrowCursor)
         self.update()
+
+    def set_lunch(self, on: bool) -> None:
+        """Take lunch off the day, or put it back at the usual time."""
+        if not self.model or self.model.has_lunch() == on:
+            return
+        if on:
+            length = models.get_int_setting("lunch_minutes", 60)
+            self._user_edit(lambda: self.model.add_lunch(LUNCH_DEFAULT_START, length))
+        else:
+            self._user_edit(self.model.remove_lunch)
+        self._commit()
 
     def set_wfh(self, wfh: bool) -> None:
         if not self.model or self.day.wfh == wfh:
@@ -223,23 +258,31 @@ class DayTimeline(QWidget):
         self._paint_sections(p)
         self._paint_now_line(p)
         self._paint_nodes(p)
+        self._paint_hover_title(p)
         p.end()
 
     def _paint_meetings(self, p: QPainter) -> None:
         r0, r1 = self._range()
         now = now_min()
+        today = date.today().isoformat()
         for start, end, _title in self.meetings:
             if end <= r0 or start >= r1:
                 continue
             y1, y2 = self._y(max(start, r0)), self._y(min(end, r1))
-            soon = self._is_today() and 0 < start - now <= ALERT_MINS
-            if soon:
+            if self.day.date < today or (self.day.date == today and end <= now):
+                # Past: grey
+                fill, edge = QColor(128, 128, 128, 40), QColor(128, 128, 128, 120)
+            elif self.day.date == today and 0 < start - now <= ALERT_MINS:
+                # Starting soon: pulsing red
                 glow = 0.5 + 0.5 * math.sin(self._pulse_phase)
-                fill = QColor(90, 150, 255, int(50 + 70 * glow))
-                edge = QColor(130, 180, 255, int(160 + 95 * glow))
+                fill = QColor(220, 40, 40, int(50 + 70 * glow))
+                edge = QColor(255, 80, 80, int(160 + 95 * glow))
+            elif self.day.date == today and start <= now:
+                # On now: red
+                fill, edge = QColor(200, 30, 30, 75), QColor(230, 60, 60, 220)
             else:
-                fill = QColor(120, 140, 170, 38)
-                edge = QColor(120, 140, 170, 110)
+                # Later: dark red
+                fill, edge = QColor(139, 0, 0, 60), QColor(170, 20, 20, 180)
             p.fillRect(QRect(0, y1, self.width(), max(2, y2 - y1)), fill)
             p.fillRect(QRect(0, y1, 2, max(2, y2 - y1)), edge)
 
@@ -255,11 +298,12 @@ class DayTimeline(QWidget):
             if self._compact:
                 continue
 
-            # Duration then title, wrapped, cropped to whole lines
+            # Duration (and Lunch / Commute), wrapped, cropped to whole lines.
+            # Titles only appear on hover, see _paint_hover_title.
             lines = (y2 - y1 - 14) // line_h
             if lines >= 1:
-                title = KIND_LABEL.get(s.kind) or s.title
-                text = fmt_duration(s.duration) + (f" {title}" if title else "")
+                label = KIND_LABEL.get(s.kind)
+                text = fmt_duration(s.duration) + (f" {label}" if label else "")
                 rect = QRect(TEXT_X, y1 + 8, TEXT_W, lines * line_h)
                 p.save()
                 p.setClipRect(rect)
@@ -296,8 +340,42 @@ class DayTimeline(QWidget):
         now = now_min()
         if r0 <= now <= r1:
             y = self._y(now)
-            p.setPen(QPen(QColor("#e05555"), 1))
+            p.setPen(QPen(QColor("#ffffff"), 1))
             p.drawLine(self._track_x - 12, y, self._track_x + 12, y)
+
+    def _hover_titles(self) -> tuple[list[str], int]:
+        """Titles under the mouse, and the y to draw them from. Only on the inner half."""
+        if (self._hover is None or not self.model or self._drag or self._compact
+                or not self._inner_side(self._hover.x())):
+            return [], 0
+        y = self._hover.y()
+        t = self._t(y)
+        hits = [(start, title) for start, end, title in self.meetings if start <= t <= end]
+        if hits:
+            return [title for _, title in hits], self._y(min(start for start, _ in hits))
+        i = self._section_at(y)
+        if i is not None and self.model.sections[i].title:
+            s = self.model.sections[i]
+            return [s.title], self._y(s.start)
+        return [], 0
+
+    def _paint_hover_title(self, p: QPainter) -> None:
+        titles, top = self._hover_titles()
+        if not titles:
+            return
+        rect = QRect(TEXT_X, 0, self._track_x - 8 - TEXT_X, 0)
+        flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap)
+        p.setFont(self._font)
+        text = "\n".join(titles)
+        needed = QFontMetrics(self._font).boundingRect(
+            QRect(0, 0, rect.width() - 6, 1000), flags, text).height()
+        rect.setHeight(needed + 6)
+        rect.moveTop(max(0, min(self.height() - rect.height(), top + 1)))
+        p.setPen(QPen(QColor("#666"), 1))
+        p.setBrush(QColor(30, 30, 30, 235))
+        p.drawRoundedRect(QRectF(rect), 3, 3)
+        p.setPen(QColor("#f0f0f0"))
+        p.drawText(rect.adjusted(3, 3, -3, -3), flags, text)
 
     def _paint_nodes(self, p: QPainter) -> None:
         dragged = self._drag["k"] if self._drag and self._drag["what"] == "node" else None
@@ -375,6 +453,7 @@ class DayTimeline(QWidget):
         y = event.position().y()
         if not self._drag:
             self._update_cursor(event.position().x(), y)
+            self._set_hover(event.position().toPoint())
             return
         d = self._drag
         if not d["moved"]:
@@ -561,9 +640,19 @@ class DayTimeline(QWidget):
     # ------------------------------------------------------------------
     # Hover text
     # ------------------------------------------------------------------
+    def _set_hover(self, pos: Optional[QPoint]) -> None:
+        before = self._hover_titles()
+        self._hover = pos
+        if self._hover_titles() != before:
+            self.update()
+
+    def leaveEvent(self, event):
+        self._set_hover(None)
+        super().leaveEvent(event)
+
     def event(self, e):
         if e.type() == QEvent.Type.ToolTip and self.model and self.model.sections:
-            text = self._tooltip_at(e.pos().y())
+            text = self._tooltip_at(e.pos().x(), e.pos().y())
             if text:
                 QToolTip.showText(e.globalPos(), text, self)
             else:
@@ -571,23 +660,27 @@ class DayTimeline(QWidget):
             return True
         return super().event(e)
 
-    def _tooltip_at(self, y: int) -> str:
+    def _tooltip_at(self, x: int, y: int) -> str:
+        """Times, project and letter. Titles only on the inner half, and only when
+        collapsed; expanded, they are drawn in place by _paint_hover_title."""
         i = self._section_at(y)
         if i is None:
             return ""
+        show_titles = self._compact and self._inner_side(x)
         s = self.model.sections[i]
         lines = [f"{to_hhmm(s.start)} – {to_hhmm(s.end)}  ({fmt_duration(s.duration)})"]
-        title = KIND_LABEL.get(s.kind) or s.title
+        title = KIND_LABEL.get(s.kind) or (s.title if show_titles else None)
         if title:
             lines.append(title)
         if s.kind == WORK:
             proj = self.projects.get(s.project_id) if s.project_id else None
             lines.append(f"{proj.code} {proj.name} · {s.category}" if proj
                          else f"Unassigned · {s.category}")
-        t = self._t(y)
-        for start, end, m_title in self.meetings:
-            if start <= t <= end:
-                lines.append(f"Calendar: {m_title} ({to_hhmm(start)} – {to_hhmm(end)})")
+        if show_titles:
+            t = self._t(y)
+            for start, end, m_title in self.meetings:
+                if start <= t <= end:
+                    lines.append(f"Calendar: {m_title} ({to_hhmm(start)} – {to_hhmm(end)})")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
