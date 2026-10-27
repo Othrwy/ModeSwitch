@@ -38,13 +38,13 @@ What changes in v2 **[decided]**: the UI becomes a vertical ribbon with a dragga
 - **R8 [decided]** The ribbon can be moved to the left or right edge of any monitor by dragging it by its header. On release it snaps to the nearest vertical edge.
 - **R8a [assumed]** The nearest edge is whichever side of the monitor under the cursor the cursor is on. A highlighted outline shows where it will land while dragging. The chosen monitor and edge are remembered (`dock_screen`, `dock_edge` settings); if that monitor is not connected, it docks on the main screen and moves back when the monitor returns. It cannot be dragged while minimised, because the header is hidden. The minimise arrow points toward the edge.
 - **R3 [decided]** Top-left: a small house-icon button toggling "working from home" for the day (section 6).
-- **R3a [decided]** Beside it, a small sandwich-icon button toggling lunch on or off for the day (T21b). The same button is in each day's header in the review panel.
+- **R3a [decided]** Beside it, a small sandwich-icon button toggling lunch on or off for the day (T21b). The icon is a sandwich wedge drawn from Patrick's reference picture: a peach triangle of bread on top, then the crust, lettuce, a sliver of filling with tomato on the right, and the bottom slice.
 - **R4 [decided]** Main area: the day timeline (section 4).
 - **R5 [decided]** Below the timeline: the project summary (section 7).
 - **R6 [decided]** Very bottom: a Review button (section 8), with an arrow pointing the way the review panel opens (`◀ Review` when docked on the right, `Review ▶` on the left).
 - **R7 [decided]** A minimise button collapses the ribbon to just the slider's width, still docked up the right edge. Clicking anywhere on the slider expands it again.
-- **R7a [decided]** The minimise button is a small `−` at the top right, beside the date. **[assumed]** Collapsed, the ribbon is 24px wide and shows sections, meetings, nodes and the now-line, with no text or boxes; hover tooltips still work, but nothing can be edited. Collapsing closes the review panel, and opening Review from the tray expands the ribbon. The collapsed state is remembered across restarts (`ribbon_collapsed` setting).
-- **R9 [decided]** Every button and setting shows a short explanation of what it does when the mouse rests on it for a moment. **[assumed]** Qt's standard tooltip delay (about 0.7 s). Toggle buttons (house, sandwich, sun) describe their current state and what clicking will do; colour swatches show the colour's hex code.
+- **R7a [decided]** The minimise button is a small arrow at the top right, beside the date, pointing into the screen edge: `→` when docked on the right, `←` on the left. **[assumed]** Collapsed, the ribbon is 24px wide and shows sections, meetings, nodes and the now-line, with no text or boxes; hover tooltips still work, but nothing can be edited. Collapsing closes the review panel, and opening Review from the tray expands the ribbon. The collapsed state is remembered across restarts (`ribbon_collapsed` setting).
+- **R9 [decided]** Every button and setting shows a short explanation of what it does when the mouse rests on it for a moment. **[assumed]** Qt's standard tooltip delay (about 0.7 s). **[decided]** The house button's tip is "Working From Home (Commute Toggle)" and the sandwich's is "Lunch Toggle". **[assumed]** The sun button describes its current state and what clicking will do; colour swatches show the colour's hex code.
 
 Layout sketch (not to scale):
 
@@ -98,6 +98,7 @@ Layout sketch (not to scale):
 - **T15 [assumed]** Sections are filled with the project's colour (the `color` field already exists on projects). Background meetings are drawn as translucent bands so the two layers are easy to tell apart.
 - **T15a [decided]** Meeting colours: **grey** once a meeting has ended, **dark red** for later meetings, and a **pulsing red** for one starting within 30 minutes (T22). **[assumed]** A meeting that is on right now is a steady, brighter red. Every meeting on a past day is grey.
 - **T16 [assumed]** If a section is too short for the code box and the subtask name, the name is dropped and shown on hover. Below about 12px the code box is dropped too.
+- **T16b [decided]** Today's timeline runs half an hour past the end of the day or the current time, whichever is later, so there is room to drag the end node down. **[assumed]** Past days in the review panel have no extra room; they share one time scale (V6).
 - **T16a [decided]** A **white** tick on the slider marks the current time. **[assumed]** In the light theme it is near-black, so it stays visible; in a custom theme it is the "Current time line" colour.
 
 ### 4.4 Interactions
@@ -112,7 +113,7 @@ Layout sketch (not to scale):
 | Right-click a section, including its project code box | **Assign subtask**: pick one of the project's subtasks from a dropdown, or **New subtask…** and type a name (P2a). The menu also offers Split here. | decided |
 | Click a node's time | Type a time directly, using v1's shorthand entry (`930` → `09:30`). | assumed |
 
-- **T17 [assumed]** When a meeting edge and the grid both apply, the meeting edge wins. Meeting snap applies to node drags only, not section-body drags. Holding **Alt** while dragging switches the meeting snap off, and the current-time snap too, so a node can be placed near a meeting edge without jumping to it.
+- **T17 [assumed]** When a meeting edge and the grid both apply, the meeting edge wins. Meeting snap applies to node drags only, not section-body drags. **[decided]** Holding **Alt** while dragging snaps only to meeting starts and ends from the calendar: the node jumps to whichever is nearest, however far away, ignoring the grid and the current time. **[assumed]** On a day with no meetings, Alt makes no difference. To place a node near a meeting edge without it jumping there, set the meeting-edge snap to Off in Settings.
 - **T17a [decided]** On today's timeline, a node dragged near the current time snaps to the current time rather than the grid marks either side of it. **[assumed]** The current time is treated as one more snap point, and the node goes to whichever of the nearest grid mark and the current time is closer.
 - **T17b [decided]** The grid step and the meeting-edge snap distance are set in Settings ("Dragging nodes"), both defaulting to **5 min**. The meeting-edge distance can be set to Off. **[assumed]** Section-body drags still snap to 15 min, as decided in the table above. The grid step also sets where a split lands.
 - **T18 [assumed]** A split happens at the point clicked, snapped to 5 min. The new bottom half is unassigned, with no subtask.
@@ -132,8 +133,9 @@ Layout sketch (not to scale):
 
 - **D1 [decided]** Start time is auto-populated from when the laptop was turned on.
 - **D2 [decided]** Once the start time is known, the day defaults to a 1-hour lunch and an 8-hour working day excluding lunch, so end = start + 8h + lunch. The end node updates as start or lunch change.
+- **D2a [decided]** If the current time goes past today's end node, the end node follows the clock: still at the computer means still working. The day's credit counts the extra time as it happens. This applies whether the end is the computed default or was set by hand to a later time. **[assumed]** An end set by hand to a time already past (dragged or typed earlier than now, or saved on Exit) is **held**: it stays put, so "I stopped at 17:00" can be recorded while the laptop stays on. The end-time source is stored as `computed`, `manual` (set by hand, follows once passed), `held` or `detected`.
 - **D3 [decided]** If Patrick does not set the end time himself, it is filled in from when the laptop was turned off.
-- **D4 [assumed]** Precedence for the end time: set by hand > detected turn-off > computed default (D2). Dragging or typing the end node counts as setting it by hand, and so does answering Yes to "Save out time?" on Exit.
+- **D4 [assumed]** Precedence for the end time: set by hand > detected turn-off > computed default (D2). Dragging or typing the end node counts as setting it by hand, and so does answering Yes to "Save out time?" on Exit. Exit only asks when the end is not already held (D2a).
 - **D5 [decided]** Leaving earlier or later than the 8-hour target is tracked as credits: credit = time worked − 8h, positive or negative.
 - **D5a [decided]** The working-day length is set in Settings: one length for every day ("Same length every day", 8h by default), or, with that unticked, a length for each working day. A day's credit, its computed end time (D2) and the credit chart (V9a) all use that day's own length. **[assumed]** Changing the lengths re-reckons past days' credit too; it does not move anyone's end times.
 - **D6 [decided]** Time worked = end − start − lunch. Commute does not count as work.
@@ -143,7 +145,7 @@ How on/off times are detected **[assumed]**:
 
 - Start: the earliest boot, wake-from-sleep or logon in the Windows System event log for today, ignoring anything before 05:00 (the `day_floor` setting). If the log has nothing, the time the app launched.
 - End: while running, the app stamps the day with a last-seen time every minute. On the next launch, any earlier day still on its computed end time gets its last-seen time as the end.
-- While the end is still the computed default the ribbon shows "time left" / "overtime"; once it is real it shows the day's credit.
+- While the end is still ahead of the clock, the ribbon shows "time left". Once the end is following the clock it shows "overtime: +…" (or the credit, if that is still negative). A held or detected end shows the day's credit.
 - Whether sleep and lid-close count as "off" is **[open Q3]**. As built, the last-seen stamp simply stops when the machine sleeps.
 
 ## 6. Working from home and commute
@@ -176,15 +178,22 @@ How on/off times are detected **[assumed]**:
 ## 8. Review panel
 
 - **V1 [decided]** The Review button expands the window, or opens a pop-out, to the **left** of the ribbon. **[assumed]** When the ribbon is docked on a left edge, it opens to the right instead. Days still run oldest to newest, left to right.
-- **V2 [decided]** It shows the day sliders for this week and all of last week, **past days only**. Today is left out, because it is already on the ribbon.
-- **V2a [decided]** Each week is set apart: alternate weeks have a slightly different background, and a thin line runs between one week's last day and the next week's Monday. **[assumed]** The newest week is the plain one. Background meetings have no coloured strip down their left side in the review panel (the ribbon keeps it).
+- **V2 [decided]** It shows the day sliders for this week, last week and the two weeks before that (four weeks; V2b condenses the older ones), **past days only**. Today is left out, because it is already on the ribbon.
+- **V2a [decided]** Each week is set apart by a thin line between one week's last day and the next week's Monday, and by its background, which gets a step darker (light theme) or lighter (dark theme) for each week back. **[assumed]** The newest week is plain. The step is the theme's "Last week's shading" colour, so a custom theme can change it.
+- **V2b [decided]** Older weeks are condensed. The newest week shown keeps full-width days. One other week, last week by default, has narrower days: node times, code boxes, the day's total and per-project totals, but no durations or space for hover titles. The rest are just the slider, with no annotations, and narrower still. **[decided]** Each slider-only week has a small **+** at the bottom, where the totals would be; clicking it shows that week narrow and returns the previously narrow week to slider only. The newest week is not affected. **[assumed]**
+  - Narrow days are 100px; slider-only days are 24px, like the collapsed ribbon.
+  - Narrow days can still be edited. Their summaries leave out subtask rows, and meeting titles move into the hover tooltip.
+  - Slider-only days are read-only, with times, projects and titles in the hover tooltip. The header is just the day of the month (full date on hover).
+  - "Newest" means the newest week shown, so on a Monday last week is full width.
+  - Reopening the panel goes back to the default weeks and last week narrow.
+- **V2c [assumed]** Background meetings have no coloured strip down their left side in the review panel (the ribbon keeps it).
 - **V3 [decided]** Friday, Saturday and Sunday are not shown.
 - **V4 [decided]** It can scroll further back in time.
 - **V5 [decided]** It contains the table for editing project codes and related settings, and a **⚙ Settings** button next to "+ Add project" that opens Settings (V9).
 - **V6 [assumed]** Each day is a column using the same vertical timeline widget as the ribbon, fully editable, with the day's total and credit beneath it. Columns run oldest to newest, left to right, so yesterday sits nearest the ribbon when it is docked on the right. All columns share one time scale.
 - **V6b [decided]** Beneath each day's slider, the total time per project for that day, in the same `✦ 0000 | 2h 35m` form, with subtask rows, as the ribbon summary (P7).
 - **V6c [assumed]** Every column reserves room for as many summary rows as the longest day, so the timelines stay level on the shared time scale.
-- **V6a [assumed]** "Earlier" adds one more week on the left. A day with nothing logged shows "Add day", which creates it starting at 08:30.
+- **V6a [decided]** "Earlier" adds every older week back to the first day with anything logged, all at once, in a sideways-scrolling strip. It is greyed out when there is nothing older to show. The panel never grows wider than its default width (wide enough for the default four weeks); extra weeks scroll. **[assumed]** A day with nothing logged shows "Add day", which creates it starting at 08:30.
 - **V7 [assumed]** The project table covers code, name and colour. It replaces the v1 Edit Modes dialog and the projects part of Settings.
 - **V7a [decided]** Lunch and Commute are listed at the top of the project table so their colours can be changed. They cannot be deleted or renamed. **[assumed]** Their colours are stored as the `lunch_color` and `commute_color` settings.
 - **V7b [decided]** Each project in the table has a small ⤷ arrow that expands the table to show that project's subtasks underneath it. **[assumed]** The arrow is faint when the project has no subtasks yet. Expanded, each subtask can be renamed in place or deleted (✕), and a "+ Add subtask" row adds one. Which projects are expanded is not remembered between sessions.
@@ -233,6 +242,11 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 
 | Date | Decision |
 |---|---|
+| 2026-10-27 | Today's end node follows the clock whenever the clock passes it, unless it was set by hand to a time already past (D2a). Slider-only review weeks have a + to show them narrow (V2b). Earlier adds all older logged weeks at once and scrolls, without widening the panel (V6a). New sandwich icon from Patrick's picture (R3a). |
+| 2026-10-27 | Review opens on four weeks: this week, last week (narrow) and two more (slider only) (V2). In overtime, today's end follows the clock while it is still the computed default (D2a). Today's timeline runs 30 min past the end or the current time, whichever is later (T16b). |
+| 2026-10-27 | Older review weeks get darker in the light theme and lighter in the dark theme (V2a); it was the other way round. |
+| 2026-10-27 | Holding Alt while dragging a node snaps only to meeting starts and ends (T17). It used to switch the meeting and current-time snaps off. |
+| 2026-10-27 | Review weeks condense with age: the newest full width, the week before narrow, older ones slider only; each week back shaded a step further (V2a, V2b). Minimise is an arrow into the screen edge (R7a). New tooltip text for the house and sandwich (R9). The sandwich icon is an angled triangle (R3a). |
 | 2026-10-27 | **Subtasks replace the A–D letters and Set title.** Right-click a section's code for Assign subtask (pick or create). Summaries list subtasks under their project; the review project table expands with ⤷ to show them (P2a, P7, V7b). |
 | 2026-10-27 | Hover tooltips explain every button and setting (R9). |
 | 2026-10-27 | Nodes snap to the current time when that is nearer than the grid (T17a). Meeting-edge snap distance drops from 15 to 5 min, and it and the grid step are adjustable in Settings (T17b). |

@@ -17,12 +17,7 @@ class HouseButton(QToolButton):
         self.setCheckable(True)
         self.setFixedSize(size, size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggled.connect(self._update_tooltip)
-        self._update_tooltip(False)
-
-    def _update_tooltip(self, checked: bool) -> None:
-        self.setToolTip("Working from home — click to add a commute" if checked
-                        else "Commuting — click for working from home")
+        self.setToolTip("Working From Home (Commute Toggle)")
 
     def paintEvent(self, event):
         p = QPainter(self)

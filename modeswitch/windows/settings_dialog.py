@@ -221,7 +221,8 @@ class SettingsDialog(QDialog):
         self._meeting_snap.setToolTip("A node dragged this close to the start or end of a"
                                       " meeting jumps to it")
         form.addRow("Snap to meeting edges within", self._meeting_snap)
-        note = QLabel("Nodes also snap to the current time. Hold Alt to use the marks only.")
+        note = QLabel("Nodes also snap to the current time. Hold Alt to snap only to meeting"
+                      " starts and ends.")
         note.setProperty("role", "faint")
         note.setWordWrap(True)
         form.addRow(note)

@@ -1,10 +1,13 @@
 """
 ReviewPanel — opens beside the ribbon, on the side away from the screen edge.
 
-Top:    one editable timeline per past working day, this week and last week,
-        oldest on the left; "Earlier" adds another week. Today is left out, because
-        it is already on the ribbon. Each week sits in its own block, alternate weeks
-        shaded, with a line between weeks.
+Top:    one editable timeline per past working day, this week and the three weeks
+        before, oldest on the left; "Earlier" adds every older week that has anything
+        logged, scrolling sideways. Today is left out, because
+        it is already on the ribbon. Each week sits in its own block, with a line
+        between weeks. The newest week is full width; one other week is narrow (times,
+        codes and totals; last week unless a slim week's + was clicked); the rest are
+        just the slider. Each week back is shaded a step further from the background.
 Bottom: the projects table (with Lunch and Commute, for their colours; ⤷ on a
         project shows its subtasks) and Settings, and the tracker chart: credit, or
         time on one project, lunch or commute.
@@ -27,7 +30,9 @@ from modeswitch.db import models
 from modeswitch.theme import current as theme
 from modeswitch.timeutil import fmt_duration, fmt_signed
 from modeswitch.widgets.credit_chart import ChartDay, CreditChart
-from modeswitch.widgets.day_timeline import DayTimeline, RIBBON_WIDTH
+from modeswitch.widgets.day_timeline import (
+    DayTimeline, RIBBON_WIDTH, NARROW_WIDTH, COMPACT_WIDTH,
+)
 from modeswitch.widgets.house_button import HouseButton
 from modeswitch.widgets.icon_buttons import SandwichButton, SunButton
 from modeswitch.windows.ribbon import summary_text
@@ -38,42 +43,92 @@ WEEK_GAP = 6
 KIND_ROWS = [(LUNCH, "Lunch"), (COMMUTE, "Commute")]   # fixed rows in the projects table
 # Projects table columns
 COL_ARROW, COL_CODE, COL_NAME, COL_COLOUR, COL_DELETE = range(5)
+HEADER_H = 22
+COLUMN_WIDTH = {"full": RIBBON_WIDTH, "narrow": NARROW_WIDTH, "compact": COMPACT_WIDTH}
+
+
+DEFAULT_WEEKS_BACK = 3   # this week, last week (narrow) and two more (slider only)
+
+
+def week_density(weeks_back: int, narrow_back: int = 1) -> str:
+    """How much of a week to show. weeks_back counts back from the newest week shown;
+    narrow_back is the one week shown narrow."""
+    if weeks_back == 0:
+        return "full"
+    return "narrow" if weeks_back == narrow_back else "compact"
+
+
+def week_gap(density: str) -> int:
+    return 3 if density == "compact" else COLUMN_GAP
+
+
+class WeekFrame(QFrame):
+    """One week's block. A slider-only week has a small + at the bottom, where the
+    totals would be, to show it narrow instead."""
+
+    def __init__(self, shade: str, on_expand=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("week")
+        self.setStyleSheet(f"QFrame#week {{ background: {shade}; border-radius: 6px; }}")
+        self._expand = None
+        if on_expand:
+            self._expand = QToolButton(self)
+            self._expand.setText("+")
+            self._expand.setFixedSize(18, 18)
+            self._expand.setToolTip("Show this week with times and totals")
+            self._expand.clicked.connect(on_expand)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._expand:
+            self._expand.move((self.width() - self._expand.width()) // 2,
+                              self.height() - self._expand.height() - 4)
+            self._expand.raise_()
 
 
 class DayColumn(QWidget):
     """Header, timeline, totals and time per project for one day."""
     changed = pyqtSignal()
 
-    def __init__(self, day_date: date, parent=None):
+    def __init__(self, day_date: date, density: str = "full", parent=None):
         super().__init__(parent)
         self.day_date = day_date
         self.date_str = day_date.isoformat()
-        self.setFixedWidth(RIBBON_WIDTH)
+        self.density = density
+        self.setFixedWidth(COLUMN_WIDTH[density])
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 4, 0, 4)
         root.setSpacing(2)
 
-        header = QHBoxLayout()
-        header.setContentsMargins(6, 0, 6, 0)
-        self._house = HouseButton(size=20)
+        # Same height at every density, so the timelines stay level
+        header_box = QWidget()
+        header_box.setFixedHeight(HEADER_H)
+        header = QHBoxLayout(header_box)
+        full = density == "full"
+        icon = 20 if full else 16
+        header.setContentsMargins(6 if full else 2, 0, 6 if full else 2, 0)
+        header.setSpacing(6 if full else 3)
+        self._house = HouseButton(size=icon)
         self._house.toggled.connect(self._on_house_toggled)
         header.addWidget(self._house)
-        self._lunch = SandwichButton(size=20)
+        self._lunch = SandwichButton(size=icon)
         self._lunch.toggled.connect(lambda on: self.timeline.set_lunch(on))
         header.addWidget(self._lunch)
-        label = QLabel(day_date.strftime("%a %d %b"))
+        label = QLabel(day_date.strftime({"full": "%a %d %b", "narrow": "%a %d"}.get(density, "%d")))
+        label.setToolTip(day_date.strftime("%A %d %B"))
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setProperty("role", "muted")
-        label.setStyleSheet("font-size: 11px;")
+        label.setStyleSheet(f"font-size: {11 if full else 10}px;")
         header.addWidget(label, stretch=1)
-        self._holiday_btn = SunButton(size=20)
+        self._holiday_btn = SunButton(size=icon)
         self._holiday_btn.clicked.connect(self._on_holiday_clicked)
         header.addWidget(self._holiday_btn)
-        root.addLayout(header)
+        root.addWidget(header_box)
 
         self.timeline = DayTimeline()
         self.timeline.meeting_edges = False
+        self.timeline.set_density(density)
         self.timeline.changed.connect(self._on_timeline_changed)
         root.addWidget(self.timeline, stretch=1)
 
@@ -95,6 +150,7 @@ class DayColumn(QWidget):
         self._totals.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._totals.setProperty("role", "muted")
         self._totals.setStyleSheet("font-size: 11px;")
+        self._totals.setFixedHeight(16)
         root.addWidget(self._totals)
 
         self._summary = QLabel()
@@ -114,13 +170,19 @@ class DayColumn(QWidget):
         has_blocks = bool(day and models.get_blocks_for_day(day.id))
         show_timeline = has_blocks and not holiday
 
+        compact = self.density == "compact"
         self._holiday_btn.setChecked(holiday)
-        self._house.setVisible(show_timeline)
-        self._lunch.setVisible(show_timeline)
+        self._holiday_btn.setVisible(not compact)
+        self._house.setVisible(show_timeline and not compact)
+        self._lunch.setVisible(show_timeline and not compact)
         self.timeline.setVisible(show_timeline)
         self._placeholder.setVisible(not show_timeline)
-        self._placeholder_label.setText("Holiday" if holiday else "No data")
-        self._add_btn.setVisible(not holiday)
+        if compact:
+            self._placeholder_label.setText("☀" if holiday else "")
+            self._placeholder.setToolTip("Holiday" if holiday else "No data")
+        else:
+            self._placeholder_label.setText("Holiday" if holiday else "No data")
+        self._add_btn.setVisible(not holiday and not compact)
 
         if show_timeline:
             self.timeline.load(day)
@@ -129,14 +191,18 @@ class DayColumn(QWidget):
                 button.blockSignals(True)
                 button.setChecked(checked)
                 button.blockSignals(False)
+            if compact:
+                self._totals.setText("")
+                self._summary.setText("")
+                return
             credit = model.credit(self.timeline.target())
             color = theme.credit if credit >= 0 else theme.debit
             self._totals.setText(
                 f"{fmt_duration(model.worked_minutes())}  "
                 f"<span style='color:{color}'>{fmt_signed(credit)}</span>")
-            self._summary.setText(summary_text(self.timeline))
+            self._summary.setText(summary_text(self.timeline, subtasks=self.density == "full"))
         else:
-            self._totals.setText("-")
+            self._totals.setText("" if compact else "-")
             self._summary.setText("")
 
     def summary_height(self) -> int:
@@ -174,7 +240,8 @@ class ReviewPanel(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.WindowStaysOnTopHint
                             | Qt.WindowType.Tool)
-        self._weeks_back = 1
+        self._weeks_back = DEFAULT_WEEKS_BACK
+        self._narrow_back = 1      # which week (counting back from the newest) is narrow
         self._columns: list[DayColumn] = []
         self._week_frames: list[QWidget] = []
         self._from_right = 0       # how far the day strip is scrolled back from today
@@ -192,10 +259,10 @@ class ReviewPanel(QWidget):
         root.setSpacing(6)
 
         bar = QHBoxLayout()
-        earlier = QPushButton("◀ Earlier")
-        earlier.setToolTip("Load the week before the oldest one shown")
-        earlier.clicked.connect(self._show_earlier)
-        bar.addWidget(earlier)
+        self._earlier_btn = QPushButton("◀ Earlier")
+        self._earlier_btn.setToolTip("Add every older week that has anything logged")
+        self._earlier_btn.clicked.connect(self._show_earlier)
+        bar.addWidget(self._earlier_btn)
         bar.addStretch()
         title = QLabel("Review")
         title.setProperty("role", "muted")
@@ -278,12 +345,20 @@ class ReviewPanel(QWidget):
         vbox.addWidget(self._chart, stretch=1)
         return group
 
+    def reset_view(self) -> None:
+        """Back to the default weeks, as when the panel is opened."""
+        self._weeks_back = DEFAULT_WEEKS_BACK
+        self._narrow_back = 1
+        self._from_right = 0
+
     def place_beside(self, ribbon_geometry: QRect, screen: QScreen, edge: str) -> None:
-        """Fill the space beside the ribbon, as wide as the days need."""
+        """Fill the space beside the ribbon, as wide as the default weeks need. Weeks
+        added with Earlier scroll sideways rather than widen the panel."""
         area = screen.availableGeometry()
-        weeks = len({d.isocalendar()[:2] for d in self._visible_dates()})
-        wanted = (len(self._visible_dates()) * (RIBBON_WIDTH + COLUMN_GAP)
-                  + weeks * (WEEK_GAP + 12) + 24)
+        wanted = 24
+        for n, dates in enumerate(reversed(list(self._weeks(DEFAULT_WEEKS_BACK).values()))):
+            density = week_density(n)
+            wanted += len(dates) * (COLUMN_WIDTH[density] + week_gap(density)) + WEEK_GAP + 12
         if edge == "right":
             width = max(720, min(wanted, ribbon_geometry.left() - area.left()))
             left = ribbon_geometry.left() - width
@@ -301,12 +376,34 @@ class ReviewPanel(QWidget):
     # ------------------------------------------------------------------
     def _visible_dates(self) -> list[date]:
         """Working days from the Monday `_weeks_back` weeks ago up to yesterday."""
+        return self._dates(self._weeks_back)
+
+    @staticmethod
+    def _dates(weeks_back: int) -> list[date]:
         today = date.today()
-        monday = today - timedelta(days=today.weekday() + 7 * self._weeks_back)
+        monday = today - timedelta(days=today.weekday() + 7 * weeks_back)
         working = models.get_day_list_setting("working_days")
         count = (today - monday).days
         return [d for d in (monday + timedelta(days=i) for i in range(count))
                 if d.isoweekday() in working]
+
+    def _weeks(self, weeks_back: int) -> dict[tuple[int, int], list[date]]:
+        """Those dates grouped by ISO week, oldest first."""
+        weeks: dict[tuple[int, int], list[date]] = {}
+        for d in self._dates(weeks_back):
+            weeks.setdefault(d.isocalendar()[:2], []).append(d)
+        return weeks
+
+    def _weeks_to_first_day(self) -> int:
+        """How many weeks back the first logged day is."""
+        first = models.get_first_logged_date()
+        if not first:
+            return 0
+        today = date.today()
+        this_monday = today - timedelta(days=today.weekday())
+        first_date = date.fromisoformat(first)
+        first_monday = first_date - timedelta(days=first_date.weekday())
+        return max(0, (this_monday - first_monday).days // 7)
 
     def _on_scroll_value(self, value: int) -> None:
         if not self._rebuilding:
@@ -332,20 +429,21 @@ class ReviewPanel(QWidget):
         while self._days_layout.count():
             self._days_layout.takeAt(0)
 
-        weeks: dict[tuple[int, int], list[date]] = {}
-        for d in self._visible_dates():
-            weeks.setdefault(d.isocalendar()[:2], []).append(d)
+        weeks = self._weeks(self._weeks_back)
+        self._earlier_btn.setEnabled(self._weeks_to_first_day() > self._weeks_back)
 
         self._days_layout.addStretch()
-        # Shade alternate weeks, counting back from the newest so it stays plain
+        # Counting back from the newest week: shaded a step further each time
         for n, (_, dates) in enumerate(reversed(list(weeks.items()))):
-            frame = QFrame()
-            frame.setObjectName("weekAlt" if n % 2 else "week")
+            density = week_density(n, self._narrow_back)
+            frame = WeekFrame(theme.week_shade(n),
+                              (lambda _, k=n: self._show_narrow(k)) if density == "compact" else None)
             layout = QHBoxLayout(frame)
-            layout.setContentsMargins(6, 0, 6, 0)
-            layout.setSpacing(COLUMN_GAP)
+            margin = 3 if density == "compact" else 6
+            layout.setContentsMargins(margin, 0, margin, 0)
+            layout.setSpacing(week_gap(density))
             for d in dates:
-                col = DayColumn(d)
+                col = DayColumn(d, density)
                 col.changed.connect(self._on_day_changed)
                 self._columns.append(col)
                 layout.addWidget(col)
@@ -361,12 +459,18 @@ class ReviewPanel(QWidget):
             self._days_layout.addWidget(frame)
 
         self._sync_ranges()
+        QTimer.singleShot(0, self._sync_ranges)   # again, once styled and laid out
         self._populate_projects()
         self._populate_series()
         self._update_chart()
 
+    def _show_narrow(self, weeks_back: int) -> None:
+        """Show that week narrow; the one that was narrow goes back to slider only."""
+        self._narrow_back = weeks_back
+        self.refresh()
+
     def _show_earlier(self) -> None:
-        self._weeks_back += 1
+        self._weeks_back = max(self._weeks_back, self._weeks_to_first_day())
         self.refresh()
 
     def _sync_ranges(self) -> None:

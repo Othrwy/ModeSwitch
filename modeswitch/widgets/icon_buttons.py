@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 
 from PyQt6.QtCore import Qt, QPointF, QRectF
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QToolButton
 
 from modeswitch.theme import current as theme
@@ -71,21 +71,30 @@ class SunButton(_IconButton):
 
 class SandwichButton(_IconButton):
     ON_BG = QColor("#5a3d1e")
-    TIP_ON = "Lunch today — click to take lunch off this day"
-    TIP_OFF = "No lunch today — click to add it back"
+    TIP_ON = TIP_OFF = "Lunch Toggle"
 
     def paint_icon(self, p, w, h, on):
-        bread = QColor("#e8b96a") if on else off_fg()
-        lettuce = QColor("#6cc04a") if on else off_fg().darker(120)
-        tomato = QColor("#e0533d") if on else off_fg().darker(110)
-        # Side on: bread, lettuce, tomato, bread
+        # A sandwich wedge: the top slice seen as a triangle, then the layers from
+        # the side: crust, lettuce, a sliver of filling with tomato, bottom slice.
+        def c(on_colour, off_factor=100):
+            return QColor(on_colour) if on else off_fg().lighter(off_factor)
+        bread = c("#f9c17a", 120)
+        crust = c("#a8754e", 90)
+        lettuce = c("#9bd13c", 105)
+        filling = c("#f4efe4", 130)
+        tomato = c("#e8322b", 80)
+
         p.setPen(Qt.PenStyle.NoPen)
-        x, width = w * 0.16, w * 0.68
-        p.setBrush(bread)
-        p.drawRoundedRect(QRectF(x, h * 0.22, width, h * 0.18), 2, 2)
+        p.setBrush(bread)        # top slice
+        p.drawPolygon(QPolygonF([QPointF(w * 0.14, h * 0.47), QPointF(w * 0.63, h * 0.14),
+                                 QPointF(w * 0.84, h * 0.47)]))
+        p.setBrush(crust)        # top crust
+        p.drawRoundedRect(QRectF(w * 0.12, h * 0.44, w * 0.76, h * 0.11), h * 0.05, h * 0.05)
+        p.setBrush(filling)
+        p.drawRect(QRectF(w * 0.15, h * 0.58, w * 0.55, h * 0.06))
         p.setBrush(lettuce)
-        p.drawRect(QRectF(x - w * 0.03, h * 0.42, width + w * 0.06, h * 0.10))
+        p.drawRoundedRect(QRectF(w * 0.11, h * 0.54, w * 0.70, h * 0.06), h * 0.03, h * 0.03)
         p.setBrush(tomato)
-        p.drawRect(QRectF(x + w * 0.02, h * 0.52, width - w * 0.04, h * 0.09))
-        p.setBrush(bread)
-        p.drawRoundedRect(QRectF(x, h * 0.62, width, h * 0.16), 2, 2)
+        p.drawRoundedRect(QRectF(w * 0.52, h * 0.56, w * 0.36, h * 0.12), h * 0.06, h * 0.06)
+        p.setBrush(crust)        # bottom slice
+        p.drawRoundedRect(QRectF(w * 0.14, h * 0.66, w * 0.72, h * 0.12), h * 0.05, h * 0.05)

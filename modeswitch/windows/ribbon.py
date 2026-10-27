@@ -38,7 +38,7 @@ from modeswitch.widgets.house_button import HouseButton
 from modeswitch.widgets.icon_buttons import SandwichButton
 
 
-def summary_text(timeline: DayTimeline) -> str:
+def summary_text(timeline: DayTimeline, subtasks: bool = True) -> str:
     """One row per project, '✦ 0000 | 2h 35m', as an HTML table, the ✦ in the
     project's colour. Under it, a '⤷ name | 1h 20m' row for each subtask worked on;
     time on the project with no subtask is only in the project's total."""
@@ -46,7 +46,7 @@ def summary_text(timeline: DayTimeline) -> str:
     for project_id, subtask_id, minutes in timeline.model.summary():
         entry = projects.setdefault(project_id, [0, []])
         entry[0] += minutes
-        if subtask_id is not None:
+        if subtask_id is not None and subtasks:
             entry[1].append((subtask_id, minutes))
     if not projects:
         return ""
@@ -129,7 +129,6 @@ class RibbonWindow(QWidget):
         self._date_label.setStyleSheet("font-size: 11px;")
         header.addWidget(self._date_label, stretch=1)
         self._collapse_btn = QToolButton()
-        self._collapse_btn.setText("−")
         self._collapse_btn.setFixedSize(20, 20)
         self._collapse_btn.setCursor(Qt.CursorShape.ArrowCursor)
         self._collapse_btn.setToolTip("Minimise to just the slider. Click the slider to expand it again")
@@ -188,6 +187,7 @@ class RibbonWindow(QWidget):
         width = COMPACT_WIDTH if self._collapsed else RIBBON_WIDTH
         edge = self.dock_edge()
         self._review_btn.setText("◀  Review" if edge == "right" else "Review  ▶")
+        self._collapse_btn.setText("→" if edge == "right" else "←")   # into the screen edge
         self.timeline.set_edge(edge)
         self.setFixedWidth(width)
         if not self.isVisible():
@@ -352,12 +352,14 @@ class RibbonWindow(QWidget):
         self._summary_label.setText(summary_text(self.timeline))
         day, model = self.timeline.day, self.timeline.model
 
-        if day.out_source == "computed":
-            left = model.work_end - now_min()
-            if left > 0:
-                text, color = f"time left: {fmt_duration(left)}", theme.muted
-            else:
-                text, color = f"overtime: +{fmt_duration(-left)}", theme.credit
+        left = model.work_end - now_min()
+        following = day.out_source in ("computed", "manual")
+        credit = model.credit(self.timeline.target())
+        if following and left > 0:
+            text, color = f"time left: {fmt_duration(left)}", theme.muted
+        elif following and credit >= 0:
+            # The end is following the clock, so this grows as you work
+            text, color = f"overtime: +{fmt_duration(credit)}", theme.credit
         else:
             credit = model.credit(self.timeline.target())
             text = f"credit: {fmt_signed(credit)}"
@@ -390,6 +392,7 @@ class RibbonWindow(QWidget):
         if self._review is None:
             self._review = ReviewPanel()
             self._review.data_changed.connect(self._on_review_changed)
+        self._review.reset_view()
         self._review.place_beside(self.geometry(), self.dock_screen(), self.dock_edge())
         self._review.refresh()
         self._review.show()
@@ -423,7 +426,7 @@ class RibbonWindow(QWidget):
     # Leaving for the day
     # ------------------------------------------------------------------
     def end_time_is_set(self) -> bool:
-        return self.timeline.day.out_source == "manual"
+        return self.timeline.day.out_source == "held"
 
     def save_out_time(self) -> None:
         self.timeline.set_end_now()

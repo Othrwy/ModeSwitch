@@ -87,6 +87,13 @@ def nudge(hex_: str, amount: float) -> str:
     return with_lightness(hex_, l + amount if l < 0.5 else l - amount)
 
 
+def extend(a: str, b: str, n: float) -> str:
+    """n steps of the way from a towards b, where b is one step; can go past b."""
+    ra, ga, ba = _rgb(a)
+    rb, gb, bb = _rgb(b)
+    return _hex(ra + (rb - ra) * n, ga + (gb - ga) * n, ba + (bb - ba) * n)
+
+
 # ---------------------------------------------------------------------------
 # Tokens
 # ---------------------------------------------------------------------------
@@ -116,7 +123,8 @@ DERIVED_TOKENS: dict[str, tuple[str, Callable[[dict], str]]] = {
     "pressed": ("Button pressed", lambda t: nudge(t["surface"], 0.14)),
     "grid": ("Chart grid lines", lambda t: mix(t["bg"], t["text"], 0.12)),
     "track": ("Unassigned time on the slider", lambda t: mix(t["bg"], t["text"], 0.22)),
-    "week_alt": ("Alternate week shading", lambda t: nudge(t["bg"], 0.035)),
+    "week_alt": ("Last week's shading (older weeks go further)",
+                 lambda t: nudge(t["bg"], 0.03)),
 }
 
 DARK = {
@@ -167,6 +175,12 @@ class _Theme:
         if alpha is not None:
             c.setAlpha(alpha)
         return c
+
+    def week_shade(self, weeks_back: int) -> str:
+        """Background for a week in the review panel: plain for the newest, then a
+        step further from the background (lighter in a dark theme, darker in a light one)
+        for each week back."""
+        return extend(self.tokens["bg"], self.tokens["week_alt"], weeks_back)
 
     @property
     def is_dark(self) -> bool:
@@ -279,7 +293,6 @@ def stylesheet() -> str:
             left: 8px;
             color: {t.muted};
         }}
-        QFrame#weekAlt {{ background: {t.week_alt}; border-radius: 6px; }}
         QFrame#weekSeparator {{ background: {t.border}; }}
         QFrame#divider {{ background: {t.border}; }}
         QTableWidget {{

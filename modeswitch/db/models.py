@@ -41,7 +41,7 @@ class Day:
     in_time: Optional[str]   # HH:MM — start of work (after any commute)
     out_time: Optional[str]  # HH:MM — end of work (before any commute)
     in_source: str           # manual | detected
-    out_source: str          # manual | detected | computed
+    out_source: str          # computed | manual (follows the clock once passed) | held | detected
     wfh: bool
     last_seen: Optional[str]  # HH:MM — last heartbeat while the app was running
     is_holiday: bool
@@ -260,6 +260,16 @@ def get_or_create_day(date_str: str, wfh: bool = True) -> Day:
             "INSERT OR IGNORE INTO days (date, wfh) VALUES (?, ?)", (date_str, int(wfh))
         )
     return get_day(date_str)
+
+
+def get_first_logged_date() -> Optional[str]:
+    """The earliest day with any sections, or None."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT MIN(d.date) AS first FROM days d
+               WHERE EXISTS (SELECT 1 FROM time_blocks b WHERE b.day_id = d.id)"""
+        ).fetchone()
+    return row["first"] if row else None
 
 
 def get_unfinished_days(before_date: str) -> list[Day]:

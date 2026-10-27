@@ -7,7 +7,7 @@ Two layers:
 
 Interactions:
   • drag a node            → resize; snaps to 5 min and to nearby meeting edges
-                             (hold Alt to switch the meeting snap off)
+                             (hold Alt to snap only to meeting starts and ends)
   • drag a section         → slide it, length fixed; snaps to 15 min
   • click a node           → type its time
   • double-click a section → split it there
@@ -35,7 +35,9 @@ from modeswitch.timeutil import (
 from modeswitch.widgets.time_input import parse_time_input
 
 RIBBON_WIDTH = 160
-COMPACT_WIDTH = 24  # the collapsed ribbon: just the slider
+NARROW_WIDTH = 100  # times and code boxes only (older weeks in the review panel)
+COMPACT_WIDTH = 24  # just the slider: the collapsed ribbon, and the oldest review weeks
+NARROW_TRACK_X = 44
 
 PAD = 14            # space above the first node and below the last
 TRACK_X = 104       # centre of the slider line
@@ -49,6 +51,7 @@ NODE_HIT = 5        # px above or below a node that still grabs it
 DRAG_THRESHOLD = 3
 
 SECTION_SNAP = 15
+END_BUFFER = 30     # room below the end of today (or the current time, if later)
 ALERT_MINS = 30     # meetings starting this soon pulse
 # Node snapping is set in Settings: the grid step ("node_snap") and how close a dragged
 # node must come to a meeting edge to jump to it ("meeting_snap"). Both default to 5 min.
@@ -81,9 +84,12 @@ class DayTimeline(QWidget):
         self._editor_node: Optional[int] = None
         self._pulse_phase = 0.0
         self._compact = False
+        self._narrow = False
         self._edge = "right"           # the screen edge this timeline sits against
         self._hover: Optional[QPoint] = None
         self._track_x = TRACK_X
+        self._text_w = TEXT_W
+        self._box_x = BOX_X
 
         self._font = QFont("Segoe UI", 8)
         self._bold = QFont("Segoe UI", 8, QFont.Weight.DemiBold)
@@ -113,6 +119,8 @@ class DayTimeline(QWidget):
         self.kind_colors = days.kind_colors()
         self.node_snap = max(1, models.get_int_setting("node_snap", 5))
         self.meeting_snap = max(0, models.get_int_setting("meeting_snap", 5))
+        if self._follow_clock():
+            days.save_model(self.day, self.model)
         self._on_clock()
         self.update()
 
@@ -158,12 +166,20 @@ class DayTimeline(QWidget):
 
     def set_compact(self, compact: bool) -> None:
         """Collapsed: just the slider, no text or boxes, and a click asks to expand."""
+        self.set_density("compact" if compact else "full")
+
+    def set_density(self, density: str) -> None:
+        """"full": everything. "narrow": node times and code boxes, no durations; titles
+        go in the tooltip. "compact": just the slider, read-only, tooltips only."""
         self._close_editor(commit=False)
         self._drag = None
-        self._compact = compact
-        self._track_x = COMPACT_WIDTH // 2 if compact else TRACK_X
-        self.setFixedWidth(COMPACT_WIDTH if compact else RIBBON_WIDTH)
-        self.setCursor(Qt.CursorShape.PointingHandCursor if compact
+        self._compact = density == "compact"
+        self._narrow = density == "narrow"
+        self._track_x = {"compact": COMPACT_WIDTH // 2, "narrow": NARROW_TRACK_X}.get(density, TRACK_X)
+        self._text_w = self._track_x - 10 - TEXT_X
+        self._box_x = self._track_x + 10
+        self.setFixedWidth({"compact": COMPACT_WIDTH, "narrow": NARROW_WIDTH}.get(density, RIBBON_WIDTH))
+        self.setCursor(Qt.CursorShape.PointingHandCursor if self._compact
                        else Qt.CursorShape.ArrowCursor)
         self.update()
 
@@ -190,7 +206,7 @@ class DayTimeline(QWidget):
         if not self.model:
             return
         self.model.set_work_end(now_min())
-        self.day.out_source = "manual"
+        self.day.out_source = "held"
         self._commit()
 
     def _commit(self) -> None:
@@ -205,10 +221,27 @@ class DayTimeline(QWidget):
         if self.model.work_start != start:
             self.day.in_source = "manual"
         if self.model.work_end != end:
-            self.day.out_source = "manual"
+            # Set earlier than now: that is when work stopped, so it stays put.
+            # Set now or later: still working, so it follows the clock once passed.
+            held = self._is_today() and self.model.work_end < now_min()
+            self.day.out_source = "held" if held else "manual"
         elif self.day.out_source == "computed":
             self.model.apply_computed_end(self.target())
+            self._follow_clock()
         refresh_titles(self.model, self.meetings)
+
+    def _follow_clock(self) -> bool:
+        """On today, once the clock passes the end node, the end follows the current
+        time: still at the computer means still working. Not when the end was set by
+        hand to a time already past ("held"). Returns True if the end moved."""
+        if (not self._is_today() or self.day.out_source not in ("computed", "manual")
+                or self.model.sections[self.model.work_end_node() - 1].kind != WORK):
+            return False
+        now = now_min()
+        if now <= self.model.work_end:
+            return False
+        self.model.set_work_end(now)
+        return True
 
     # ------------------------------------------------------------------
     # Coordinates
@@ -219,7 +252,10 @@ class DayTimeline(QWidget):
         if self._fixed_range:
             return self._fixed_range
         s = self.model.sections
-        return s[0].start, s[-1].end
+        end = s[-1].end
+        if self._is_today():
+            end = max(end, now_min())
+        return s[0].start, min(24 * 60, end + END_BUFFER)
 
     def _ppm(self) -> float:
         r0, r1 = self._range()
@@ -245,7 +281,7 @@ class DayTimeline(QWidget):
         if y2 - y1 < 12:
             return None
         h = min(BOX_H, y2 - y1 - 4)
-        return QRect(BOX_X, y1 + 2, CODE_W, h)
+        return QRect(self._box_x, y1 + 2, CODE_W, h)
 
     def _subtask_rect(self, i: int) -> Optional[QRect]:
         code = self._code_rect(i)
@@ -254,7 +290,7 @@ class DayTimeline(QWidget):
         top = code.bottom() + 2
         if top + 12 > self._y(self.model.sections[i].end):
             return None
-        return QRect(BOX_X, top, self.width() - BOX_X - 2, 12)
+        return QRect(self._box_x, top, self.width() - self._box_x - 2, 12)
 
     # ------------------------------------------------------------------
     # Paint
@@ -314,7 +350,7 @@ class DayTimeline(QWidget):
             # Duration (and Lunch / Commute), wrapped, cropped to whole lines.
             # Titles only appear on hover, see _paint_hover_title.
             lines = (y2 - y1 - 14) // line_h
-            if lines >= 1:
+            if lines >= 1 and not self._narrow:
                 label = KIND_LABEL.get(s.kind)
                 text = fmt_duration(s.duration) + (f" {label}" if label else "")
                 rect = QRect(TEXT_X, y1 + 8, TEXT_W, lines * line_h)
@@ -358,7 +394,7 @@ class DayTimeline(QWidget):
 
     def _hover_titles(self) -> tuple[list[str], int]:
         """Titles under the mouse, and the y to draw them from. Only on the inner half."""
-        if (self._hover is None or not self.model or self._drag or self._compact
+        if (self._hover is None or not self.model or self._drag or self._compact or self._narrow
                 or not self._inner_side(self._hover.x())):
             return [], 0
         y = self._hover.y()
@@ -400,7 +436,7 @@ class DayTimeline(QWidget):
             # Skip a time label that would sit on top of the one above
             if not self._compact and (k == dragged or y - last_label_y >= 11):
                 p.setPen(theme.q("text"))
-                p.drawText(QRect(TEXT_X, y - 7, TEXT_W, 14),
+                p.drawText(QRect(TEXT_X, y - 7, self._text_w, 14),
                            int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
                            to_hhmm(t))
                 last_label_y = y
@@ -419,7 +455,7 @@ class DayTimeline(QWidget):
             rect = self._code_rect(i)
             if rect and rect.adjusted(-1, -1, 1, 1).contains(int(x), int(y)):
                 return "code", i
-        if x < BOX_X:
+        if x < self._box_x:
             best, best_d = None, NODE_HIT + 1
             for k in range(self.model.node_count()):
                 d = abs(y - self._y(self.model.node_time(k)))
@@ -474,8 +510,8 @@ class DayTimeline(QWidget):
             self._frozen_range = self._range()   # keep the scale still while dragging
 
         if d["what"] == "node":
-            free = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
-            t = self._snap_node_time(self._t(y), use_magnets=not free)
+            meetings_only = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
+            t = self._snap_node_time(self._t(y), meetings_only)
             self._user_edit(lambda: self.model.move_node(d["k"], t))
         else:
             delta = (y - d["y0"]) / self._ppm()
@@ -539,17 +575,19 @@ class DayTimeline(QWidget):
         else:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
 
-    def _snap_node_time(self, raw: float, use_magnets: bool) -> int:
+    def _snap_node_time(self, raw: float, meetings_only: bool = False) -> int:
         """Where a dragged node lands. A meeting edge within `meeting_snap` wins;
         otherwise the nearer of the grid mark and, on today, the current time.
-        Holding Alt (use_magnets=False) leaves just the grid."""
-        if use_magnets:
-            edges = [e for start, end, _ in self.meetings for e in (start, end)]
-            near = [e for e in edges if abs(e - raw) <= self.meeting_snap]
-            if near:
-                return min(near, key=lambda e: abs(e - raw))
+        Holding Alt (meetings_only) jumps to the nearest meeting start or end however
+        far away, or the grid if the day has no meetings."""
+        edges = [e for start, end, _ in self.meetings for e in (start, end)]
+        if meetings_only and edges:
+            return min(edges, key=lambda e: abs(e - raw))
+        near = [e for e in edges if abs(e - raw) <= self.meeting_snap]
+        if near:
+            return min(near, key=lambda e: abs(e - raw))
         grid = snap(raw, self.node_snap)
-        if use_magnets and self._is_today():
+        if self._is_today():
             now = now_min()
             if abs(now - raw) < abs(grid - raw):
                 return now
@@ -654,7 +692,8 @@ class DayTimeline(QWidget):
         ed.setText(to_hhmm(self.model.node_time(k)))
         ed.setMaxLength(5)
         ed.setAlignment(Qt.AlignmentFlag.AlignRight)
-        ed.setGeometry(TEXT_X + TEXT_W - 46, max(0, min(self.height() - 18, y - 9)), 48, 18)
+        ed.setGeometry(max(0, TEXT_X + self._text_w - 46), max(0, min(self.height() - 18, y - 9)),
+                       48, 18)
         ed.setStyleSheet("background: #fff; color: #000; border: none; padding: 0 2px;")
         ed.editingFinished.connect(lambda: self._close_editor(commit=True))
         self._editor, self._editor_node = ed, k
@@ -702,11 +741,11 @@ class DayTimeline(QWidget):
 
     def _tooltip_at(self, x: int, y: int) -> str:
         """Times, project and subtask. Titles only on the inner half, and only when
-        collapsed; expanded, they are drawn in place by _paint_hover_title."""
+        compact or narrow; at full width they are drawn in place by _paint_hover_title."""
         i = self._section_at(y)
         if i is None:
             return ""
-        show_titles = self._compact and self._inner_side(x)
+        show_titles = (self._compact or self._narrow) and self._inner_side(x)
         s = self.model.sections[i]
         lines = [f"{to_hhmm(s.start)} – {to_hhmm(s.end)}  ({fmt_duration(s.duration)})"]
         title = KIND_LABEL.get(s.kind) or (s.title if show_titles else None)
@@ -729,6 +768,8 @@ class DayTimeline(QWidget):
     # Clock: the now-line and the upcoming-meeting pulse
     # ------------------------------------------------------------------
     def _on_clock(self) -> None:
+        if self.model and self.model.sections and not self._drag and not self._editor                 and self._follow_clock():
+            self._commit()
         now = now_min()
         soon = self._is_today() and any(0 < start - now <= ALERT_MINS
                                         for start, _, _ in self.meetings)
