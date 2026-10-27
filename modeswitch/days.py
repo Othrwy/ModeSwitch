@@ -20,15 +20,39 @@ def default_wfh(day_date: date) -> bool:
     return day_date.isoweekday() in models.get_day_list_setting("wfh_days")
 
 
-def target_minutes() -> int:
-    return models.get_int_setting("target_minutes", 480)
+DEFAULT_KIND_COLORS = {"lunch": "#FFA500", "commute": "#808080"}
+
+
+def target_minutes(day_date: Optional[date] = None) -> int:
+    """The nominal working day: one length for every day, or set per weekday."""
+    default = models.get_int_setting("target_minutes", 480)
+    if day_date is None or models.get_setting("target_same", "1") == "1":
+        return default
+    return target_by_weekday().get(day_date.isoweekday(), default)
+
+
+def target_by_weekday() -> dict[int, int]:
+    """{isoweekday: minutes} from the 'target_by_day' setting, e.g. '1:480,2:450'."""
+    out = {}
+    for part in models.get_setting("target_by_day", "").split(","):
+        if ":" in part:
+            day, mins = part.split(":", 1)
+            if day.strip().isdigit() and mins.strip().isdigit():
+                out[int(day)] = int(mins)
+    return out
+
+
+def kind_colors() -> dict[str, str]:
+    """Colours for lunch and commute sections, editable like a project's."""
+    return {kind: models.get_setting(f"{kind}_color", default)
+            for kind, default in DEFAULT_KIND_COLORS.items()}
 
 
 def load_model(day: Day) -> DayModel:
     blocks = models.get_blocks_for_day(day.id)
     return DayModel([
         Section(kind=b.kind, start=to_min(b.start_time), end=to_min(b.end_time),
-                project_id=b.project_id, category=b.category,
+                project_id=b.project_id, subtask_id=b.subtask_id,
                 title=b.title, title_manual=b.title_manual)
         for b in blocks
     ])
@@ -39,8 +63,8 @@ def load_meetings(date_str: str) -> list[tuple[int, int, str]]:
             for m in models.get_meetings(date_str)]
 
 
-def load_rules() -> list[tuple[str, int, str]]:
-    return [(r.pattern, r.project_id, r.category) for r in models.get_rules()]
+def load_rules() -> list[tuple[str, int, Optional[int]]]:
+    return [(r.pattern, r.project_id, r.subtask_id) for r in models.get_rules()]
 
 
 def save_model(day: Day, model: DayModel) -> None:
@@ -50,7 +74,7 @@ def save_model(day: Day, model: DayModel) -> None:
     models.replace_blocks(day.id, [
         TimeBlock(id=None, day_id=day.id, project_id=s.project_id, kind=s.kind,
                   start_time=to_hhmm(s.start), end_time=to_hhmm(s.end),
-                  category=s.category, title=s.title, title_manual=s.title_manual)
+                  subtask_id=s.subtask_id, title=s.title, title_manual=s.title_manual)
         for s in model.sections
     ])
     day.in_time, day.out_time = to_hhmm(model.work_start), to_hhmm(model.work_end)
@@ -74,7 +98,7 @@ def ensure_day(date_str: str, start: Optional[str] = None,
         to_min(start), day.wfh,
         lunch_mins=models.get_int_setting("lunch_minutes", 60),
         commute_mins=models.get_int_setting("commute_minutes", 60),
-        target_mins=target_minutes(),
+        target_mins=target_minutes(day_date),
     ))
     save_model(day, model)
     return day

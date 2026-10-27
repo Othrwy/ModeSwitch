@@ -11,8 +11,8 @@ Interactions:
   • drag a section         → slide it, length fixed; snaps to 15 min
   • click a node           → type its time
   • double-click a section → split it there
-  • right-click a section  → split / set title / delete
-  • click the code box or the letter box → pick from a dropdown
+  • right-click a section  → assign subtask / split / delete
+  • click the code box     → pick a project from a dropdown
 """
 from __future__ import annotations
 
@@ -24,9 +24,10 @@ from PyQt6.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QTimer, QEvent, pyq
 from PyQt6.QtGui import QColor, QPainter, QFont, QFontMetrics, QPen
 from PyQt6.QtWidgets import QWidget, QMenu, QLineEdit, QToolTip, QInputDialog
 
-from modeswitch import days
+from modeswitch import days, theme as theme_mod
+from modeswitch.theme import current as theme
 from modeswitch.db import models
-from modeswitch.db.models import Day, Project
+from modeswitch.db.models import Day, Project, Subtask
 from modeswitch.day_model import DayModel, WORK, LUNCH, COMMUTE, refresh_titles
 from modeswitch.timeutil import (
     to_hhmm, snap, fmt_duration, now_min, contrasting_text,
@@ -47,17 +48,14 @@ NODE_R = 4
 NODE_HIT = 5        # px above or below a node that still grabs it
 DRAG_THRESHOLD = 3
 
-NODE_SNAP = 5
 SECTION_SNAP = 15
-MEETING_SNAP = 15   # a dragged node jumps to a meeting edge within this many minutes
 ALERT_MINS = 30     # meetings starting this soon pulse
+# Node snapping is set in Settings: the grid step ("node_snap") and how close a dragged
+# node must come to a meeting edge to jump to it ("meeting_snap"). Both default to 5 min.
 
-LETTERS = ["A", "B", "C", "D"]
 LUNCH_DEFAULT_START = 12 * 60   # where lunch goes when it is put back on a day
 
-KIND_COLOR = {LUNCH: "#FFA500", COMMUTE: "#808080"}
 KIND_LABEL = {LUNCH: "Lunch", COMMUTE: "Commute"}
-UNASSIGNED_COLOR = "#4a4a4a"
 
 
 class DayTimeline(QWidget):
@@ -70,6 +68,11 @@ class DayTimeline(QWidget):
         self.model: Optional[DayModel] = None
         self.meetings: list[tuple[int, int, str]] = []
         self.projects: dict[int, Project] = {}
+        self.subtasks: dict[int, Subtask] = {}
+        self.kind_colors: dict[str, str] = days.DEFAULT_KIND_COLORS
+        self.meeting_edges = True      # the coloured strip down a meeting's left side
+        self.node_snap = 5             # grid step for nodes, minutes
+        self.meeting_snap = 5          # a dragged node jumps to a meeting edge this close
 
         self._fixed_range: Optional[tuple[int, int]] = None
         self._frozen_range: Optional[tuple[int, int]] = None
@@ -106,9 +109,20 @@ class DayTimeline(QWidget):
         self.day = day
         self.model = days.load_model(day)
         self.meetings = days.load_meetings(day.date)
-        self.projects = {p.id: p for p in models.get_all_projects()}
+        self._load_projects()
+        self.kind_colors = days.kind_colors()
+        self.node_snap = max(1, models.get_int_setting("node_snap", 5))
+        self.meeting_snap = max(0, models.get_int_setting("meeting_snap", 5))
         self._on_clock()
         self.update()
+
+    def _load_projects(self) -> None:
+        self.projects = {p.id: p for p in models.get_all_projects()}
+        self.subtasks = {s.id: s for s in models.get_subtasks()}
+
+    def target(self) -> int:
+        """This day's nominal working minutes."""
+        return days.target_minutes(date.fromisoformat(self.day.date))
 
     def reload(self) -> None:
         if self.day:
@@ -193,7 +207,7 @@ class DayTimeline(QWidget):
         if self.model.work_end != end:
             self.day.out_source = "manual"
         elif self.day.out_source == "computed":
-            self.model.apply_computed_end(days.target_minutes())
+            self.model.apply_computed_end(self.target())
         refresh_titles(self.model, self.meetings)
 
     # ------------------------------------------------------------------
@@ -221,7 +235,7 @@ class DayTimeline(QWidget):
         return bool(self.day) and self.day.date == date.today().isoformat()
 
     # ------------------------------------------------------------------
-    # Layout of the two boxes to the right of a section
+    # Layout of the code box, and the subtask name under it, right of a section
     # ------------------------------------------------------------------
     def _code_rect(self, i: int) -> Optional[QRect]:
         s = self.model.sections[i]
@@ -233,22 +247,21 @@ class DayTimeline(QWidget):
         h = min(BOX_H, y2 - y1 - 4)
         return QRect(BOX_X, y1 + 2, CODE_W, h)
 
-    def _letter_rect(self, i: int) -> Optional[QRect]:
+    def _subtask_rect(self, i: int) -> Optional[QRect]:
         code = self._code_rect(i)
         if code is None:
             return None
-        s = self.model.sections[i]
-        top = code.bottom() + 3
-        if top + BOX_H + 2 > self._y(s.end):
+        top = code.bottom() + 2
+        if top + 12 > self._y(self.model.sections[i].end):
             return None
-        return QRect(BOX_X, top, BOX_H, BOX_H)
+        return QRect(BOX_X, top, self.width() - BOX_X - 2, 12)
 
     # ------------------------------------------------------------------
     # Paint
     # ------------------------------------------------------------------
     def paintEvent(self, event):
+        # No background fill: whatever is behind shows through (week shading in review)
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#1e1e1e"))
         if not self.model or not self.model.sections:
             p.end()
             return
@@ -270,21 +283,18 @@ class DayTimeline(QWidget):
                 continue
             y1, y2 = self._y(max(start, r0)), self._y(min(end, r1))
             if self.day.date < today or (self.day.date == today and end <= now):
-                # Past: grey
-                fill, edge = QColor(128, 128, 128, 40), QColor(128, 128, 128, 120)
+                fill, edge = theme.q("meeting_past", 45), theme.q("meeting_past", 130)
             elif self.day.date == today and 0 < start - now <= ALERT_MINS:
-                # Starting soon: pulsing red
                 glow = 0.5 + 0.5 * math.sin(self._pulse_phase)
-                fill = QColor(220, 40, 40, int(50 + 70 * glow))
-                edge = QColor(255, 80, 80, int(160 + 95 * glow))
+                fill = theme.q("meeting_soon", int(50 + 70 * glow))
+                edge = theme.q("meeting_soon", int(160 + 95 * glow))
             elif self.day.date == today and start <= now:
-                # On now: red
-                fill, edge = QColor(200, 30, 30, 75), QColor(230, 60, 60, 220)
+                fill, edge = theme.q("meeting_now", 80), theme.q("meeting_now", 220)
             else:
-                # Later: dark red
-                fill, edge = QColor(139, 0, 0, 60), QColor(170, 20, 20, 180)
+                fill, edge = theme.q("meeting_later", 65), theme.q("meeting_later", 190)
             p.fillRect(QRect(0, y1, self.width(), max(2, y2 - y1)), fill)
-            p.fillRect(QRect(0, y1, 2, max(2, y2 - y1)), edge)
+            if self.meeting_edges:
+                p.fillRect(QRect(0, y1, 2, max(2, y2 - y1)), edge)
 
     def _paint_sections(self, p: QPainter) -> None:
         fm = QFontMetrics(self._font)
@@ -292,7 +302,10 @@ class DayTimeline(QWidget):
         for i, s in enumerate(self.model.sections):
             y1, y2 = self._y(s.start), self._y(s.end)
             proj = self.projects.get(s.project_id) if s.project_id else None
-            color = QColor(KIND_COLOR.get(s.kind) or (proj.color if proj else UNASSIGNED_COLOR))
+            if s.kind in self.kind_colors:
+                color = QColor(self.kind_colors[s.kind])
+            else:
+                color = QColor(proj.color) if proj else theme.q("track")
 
             p.fillRect(QRect(self._track_x - TRACK_W // 2, y1, TRACK_W, y2 - y1), color)
             if self._compact:
@@ -308,30 +321,30 @@ class DayTimeline(QWidget):
                 p.save()
                 p.setClipRect(rect)
                 p.setFont(self._font)
-                p.setPen(QColor("#b8b8b8"))
+                p.setPen(theme.q("muted"))
                 p.drawText(rect, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
                                      | Qt.TextFlag.TextWordWrap), text)
                 p.restore()
 
             code_rect = self._code_rect(i)
             if code_rect:
-                bg = QColor(proj.color) if proj else QColor("#2d2d2d")
-                fg = QColor(contrasting_text(proj.color)) if proj else QColor("#888")
-                p.setPen(QPen(QColor("#666"), 1))
+                bg = QColor(proj.color) if proj else theme.q("surface")
+                fg = QColor(contrasting_text(proj.color)) if proj else theme.q("faint")
+                p.setPen(QPen(theme.q("border"), 1))
                 p.setBrush(bg)
                 p.drawRoundedRect(QRectF(code_rect), 2, 2)
                 p.setFont(self._bold)
                 p.setPen(fg)
                 p.drawText(code_rect, int(Qt.AlignmentFlag.AlignCenter),
                            proj.code if proj else "----")
-            letter_rect = self._letter_rect(i)
-            if letter_rect:
-                p.setPen(QPen(QColor("#666"), 1))
-                p.setBrush(QColor("#2d2d2d"))
-                p.drawRoundedRect(QRectF(letter_rect), 2, 2)
+            sub = self.subtasks.get(s.subtask_id) if s.subtask_id else None
+            sub_rect = self._subtask_rect(i) if sub else None
+            if sub_rect:
                 p.setFont(self._font)
-                p.setPen(QColor("#ddd"))
-                p.drawText(letter_rect, int(Qt.AlignmentFlag.AlignCenter), s.category)
+                p.setPen(theme.q("muted"))
+                p.drawText(sub_rect, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                           QFontMetrics(self._font).elidedText(
+                               sub.name, Qt.TextElideMode.ElideRight, sub_rect.width()))
 
     def _paint_now_line(self, p: QPainter) -> None:
         if not self._is_today():
@@ -340,7 +353,7 @@ class DayTimeline(QWidget):
         now = now_min()
         if r0 <= now <= r1:
             y = self._y(now)
-            p.setPen(QPen(QColor("#ffffff"), 1))
+            p.setPen(QPen(theme.q("now_line"), 1))
             p.drawLine(self._track_x - 12, y, self._track_x + 12, y)
 
     def _hover_titles(self) -> tuple[list[str], int]:
@@ -371,10 +384,10 @@ class DayTimeline(QWidget):
             QRect(0, 0, rect.width() - 6, 1000), flags, text).height()
         rect.setHeight(needed + 6)
         rect.moveTop(max(0, min(self.height() - rect.height(), top + 1)))
-        p.setPen(QPen(QColor("#666"), 1))
-        p.setBrush(QColor(30, 30, 30, 235))
+        p.setPen(QPen(theme.q("border"), 1))
+        p.setBrush(theme.q("surface", 240))
         p.drawRoundedRect(QRectF(rect), 3, 3)
-        p.setPen(QColor("#f0f0f0"))
+        p.setPen(theme.q("text"))
         p.drawText(rect.adjusted(3, 3, -3, -3), flags, text)
 
     def _paint_nodes(self, p: QPainter) -> None:
@@ -386,13 +399,13 @@ class DayTimeline(QWidget):
             y = self._y(t)
             # Skip a time label that would sit on top of the one above
             if not self._compact and (k == dragged or y - last_label_y >= 11):
-                p.setPen(QColor("#ffffff") if k == dragged else QColor("#e0e0e0"))
+                p.setPen(theme.q("text"))
                 p.drawText(QRect(TEXT_X, y - 7, TEXT_W, 14),
                            int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
                            to_hhmm(t))
                 last_label_y = y
-            p.setPen(QPen(QColor("#1e1e1e"), 1))
-            p.setBrush(QColor("#ffffff"))
+            p.setPen(QPen(theme.q("bg"), 1))
+            p.setBrush(theme.q("node"))
             r = NODE_R + 1 if k == dragged else NODE_R
             p.drawEllipse(QPointF(self._track_x, y), r, r)
 
@@ -403,9 +416,9 @@ class DayTimeline(QWidget):
         if not self.model or not self.model.sections:
             return None
         for i in range(len(self.model.sections)):
-            for name, rect in (("code", self._code_rect(i)), ("letter", self._letter_rect(i))):
-                if rect and rect.adjusted(-1, -1, 1, 1).contains(int(x), int(y)):
-                    return name, i
+            rect = self._code_rect(i)
+            if rect and rect.adjusted(-1, -1, 1, 1).contains(int(x), int(y)):
+                return "code", i
         if x < BOX_X:
             best, best_d = None, NODE_HIT + 1
             for k in range(self.model.node_count()):
@@ -439,8 +452,6 @@ class DayTimeline(QWidget):
         what, idx = hit
         if what == "code":
             self._open_code_menu(idx)
-        elif what == "letter":
-            self._open_letter_menu(idx)
         elif what == "node":
             self._drag = {"what": "node", "k": idx, "y0": event.position().y(), "moved": False}
         else:
@@ -464,7 +475,7 @@ class DayTimeline(QWidget):
 
         if d["what"] == "node":
             free = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
-            t = self._snap_node_time(self._t(y), use_meetings=not free)
+            t = self._snap_node_time(self._t(y), use_magnets=not free)
             self._user_edit(lambda: self.model.move_node(d["k"], t))
         else:
             delta = (y - d["y0"]) / self._ppm()
@@ -495,24 +506,24 @@ class DayTimeline(QWidget):
         if self._compact or not self.model:
             return
         hit = self._hit(event.pos().x(), event.pos().y())
-        i = hit[1] if hit and hit[0] in ("section", "code", "letter") else self._section_at(event.pos().y())
+        i = hit[1] if hit and hit[0] in ("section", "code") else self._section_at(event.pos().y())
         if i is None:
             return
         s = self.model.sections[i]
-        t = snap(self._t(event.pos().y()), NODE_SNAP)
+        t = snap(self._t(event.pos().y()), self.node_snap)
         menu = QMenu(self)
+        subtask_actions = self._add_subtask_menu(menu, s)
+        menu.addSeparator()
         split = menu.addAction("Split here")
         split.setEnabled(self.model.can_split(i, t))
-        title = menu.addAction("Set title…")
-        title.setEnabled(s.kind == WORK)
         menu.addSeparator()
         delete = menu.addAction("Delete")
         delete.setEnabled(self.model.can_delete(i))
         chosen = menu.exec(event.globalPos())
-        if chosen == split:
+        if chosen in subtask_actions:
+            self._assign_subtask(s, subtask_actions[chosen])
+        elif chosen == split:
             self._split(i, event.pos().y())
-        elif chosen == title:
-            self._set_title(i)
         elif chosen == delete:
             self._user_edit(lambda: self.model.delete(i))
             self._commit()
@@ -521,38 +532,37 @@ class DayTimeline(QWidget):
         hit = self._hit(x, y)
         if not hit:
             self.setCursor(Qt.CursorShape.ArrowCursor)
-        elif hit[0] in ("code", "letter"):
+        elif hit[0] == "code":
             self.setCursor(Qt.CursorShape.PointingHandCursor)
         elif hit[0] == "node":
             self.setCursor(Qt.CursorShape.SizeVerCursor)
         else:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
 
-    def _snap_node_time(self, raw: float, use_meetings: bool) -> int:
-        if use_meetings:
+    def _snap_node_time(self, raw: float, use_magnets: bool) -> int:
+        """Where a dragged node lands. A meeting edge within `meeting_snap` wins;
+        otherwise the nearer of the grid mark and, on today, the current time.
+        Holding Alt (use_magnets=False) leaves just the grid."""
+        if use_magnets:
             edges = [e for start, end, _ in self.meetings for e in (start, end)]
-            near = [e for e in edges if abs(e - raw) <= MEETING_SNAP]
+            near = [e for e in edges if abs(e - raw) <= self.meeting_snap]
             if near:
                 return min(near, key=lambda e: abs(e - raw))
-        return snap(raw, NODE_SNAP)
+        grid = snap(raw, self.node_snap)
+        if use_magnets and self._is_today():
+            now = now_min()
+            if abs(now - raw) < abs(grid - raw):
+                return now
+        return grid
 
     # ------------------------------------------------------------------
     # Section actions
     # ------------------------------------------------------------------
     def _split(self, i: int, y: float) -> None:
-        t = snap(self._t(y), NODE_SNAP)
+        t = snap(self._t(y), self.node_snap)
         if self.model.can_split(i, t):
             self._user_edit(lambda: self.model.split(i, t))
             self._commit()
-
-    def _set_title(self, i: int) -> None:
-        s = self.model.sections[i]
-        text, ok = QInputDialog.getText(self, "Section title", "Title:", text=s.title or "")
-        if not ok:
-            return
-        s.title = text.strip() or None
-        s.title_manual = s.title is not None
-        self._commit()
 
     def _open_code_menu(self, i: int) -> None:
         s = self.model.sections[i]
@@ -581,29 +591,59 @@ class DayTimeline(QWidget):
             s.project_id = chosen.data()
         if s.project_id:
             models.touch_project(s.project_id)
-        self.projects = {p.id: p for p in models.get_all_projects()}
+        sub = self.subtasks.get(s.subtask_id) if s.subtask_id else None
+        if sub is None or sub.project_id != s.project_id:
+            s.subtask_id = None   # a subtask belongs to one project
+        self._load_projects()
+        if chosen == new:
+            theme_mod.hub().projects_changed.emit()
         self._remember_title(s)
         self._commit()
 
-    def _open_letter_menu(self, i: int) -> None:
-        s = self.model.sections[i]
-        menu = QMenu(self)
-        for letter in LETTERS:
-            action = menu.addAction(letter)
+    def _add_subtask_menu(self, menu: QMenu, s) -> dict:
+        """'Assign subtask' submenu: None, the project's subtasks, New subtask….
+        Returns {action: subtask id, None for none, or "new"}."""
+        sub_menu = menu.addMenu("Assign subtask")
+        if s.kind != WORK or not s.project_id:
+            sub_menu.setEnabled(False)
+            return {}
+        actions = {}
+        none = sub_menu.addAction("None")
+        none.setCheckable(True)
+        none.setChecked(s.subtask_id is None)
+        actions[none] = None
+        subs = models.get_subtasks(s.project_id)
+        if subs:
+            sub_menu.addSeparator()
+        for sub in subs:
+            action = sub_menu.addAction(sub.name)
             action.setCheckable(True)
-            action.setChecked(letter == s.category)
-        chosen = menu.exec(self.mapToGlobal(self._letter_rect(i).bottomLeft()))
-        if chosen is None:
-            return
-        s.category = chosen.text()
+            action.setChecked(sub.id == s.subtask_id)
+            actions[action] = sub.id
+        sub_menu.addSeparator()
+        actions[sub_menu.addAction("New subtask…")] = "new"
+        return actions
+
+    def _assign_subtask(self, s, choice) -> None:
+        if choice == "new":
+            proj = self.projects.get(s.project_id)
+            name, ok = QInputDialog.getText(self, "New subtask",
+                                            f"Subtask of {proj.code} {proj.name}:")
+            name = name.strip()
+            if not ok or not name:
+                return
+            choice = models.get_or_create_subtask(s.project_id, name).id
+            self._load_projects()
+            theme_mod.hub().projects_changed.emit()
+        s.subtask_id = choice
         self._remember_title(s)
         self._commit()
 
     @staticmethod
     def _remember_title(s) -> None:
-        """Learn that sections with this title belong to this project and letter."""
+        """Learn that sections with this title belong to this project and subtask."""
         if s.title and s.project_id:
-            models.upsert_rule(s.title, s.project_id, s.category)
+            models.upsert_rule(s.title, s.project_id, s.subtask_id)
 
     # ------------------------------------------------------------------
     # Typing a node's time
@@ -661,7 +701,7 @@ class DayTimeline(QWidget):
         return super().event(e)
 
     def _tooltip_at(self, x: int, y: int) -> str:
-        """Times, project and letter. Titles only on the inner half, and only when
+        """Times, project and subtask. Titles only on the inner half, and only when
         collapsed; expanded, they are drawn in place by _paint_hover_title."""
         i = self._section_at(y)
         if i is None:
@@ -674,8 +714,10 @@ class DayTimeline(QWidget):
             lines.append(title)
         if s.kind == WORK:
             proj = self.projects.get(s.project_id) if s.project_id else None
-            lines.append(f"{proj.code} {proj.name} · {s.category}" if proj
-                         else f"Unassigned · {s.category}")
+            lines.append(f"{proj.code} {proj.name}" if proj else "Unassigned")
+            sub = self.subtasks.get(s.subtask_id) if s.subtask_id else None
+            if sub:
+                lines.append(f"⤷ {sub.name}")
         if show_titles:
             t = self._t(y)
             for start, end, m_title in self.meetings:

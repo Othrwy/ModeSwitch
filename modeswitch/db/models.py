@@ -1,5 +1,5 @@
 """
-CRUD helpers for settings, Project, Day, TimeBlock, Meeting and TitleRule.
+CRUD helpers for settings, Project, Subtask, Day, TimeBlock, Meeting and TitleRule.
 """
 from __future__ import annotations
 
@@ -28,6 +28,13 @@ class Project:
 
 
 @dataclass
+class Subtask:
+    id: int
+    project_id: int
+    name: str
+
+
+@dataclass
 class Day:
     id: int
     date: str                # YYYY-MM-DD
@@ -48,7 +55,7 @@ class TimeBlock:
     kind: str                # work | lunch | commute
     start_time: str          # HH:MM
     end_time: str            # HH:MM
-    category: str = "A"      # A-D, free tag
+    subtask_id: Optional[int] = None
     title: Optional[str] = None
     title_manual: bool = False
 
@@ -68,7 +75,7 @@ class TitleRule:
     id: int
     pattern: str             # lower-case text matched anywhere in a title
     project_id: int
-    category: str
+    subtask_id: Optional[int]
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +185,50 @@ def delete_project(project_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Subtask helpers. A subtask belongs to one project; deleting it leaves the
+# sections it was on with just the project.
+# ---------------------------------------------------------------------------
+
+def _row_to_subtask(row: sqlite3.Row) -> Subtask:
+    return Subtask(id=row["id"], project_id=row["project_id"], name=row["name"])
+
+
+def get_subtasks(project_id: Optional[int] = None) -> list[Subtask]:
+    with get_connection() as conn:
+        if project_id is None:
+            rows = conn.execute("SELECT * FROM subtasks ORDER BY name COLLATE NOCASE").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM subtasks WHERE project_id = ? ORDER BY name COLLATE NOCASE",
+                (project_id,)).fetchall()
+    return [_row_to_subtask(r) for r in rows]
+
+
+def get_or_create_subtask(project_id: int, name: str) -> Subtask:
+    with get_connection() as conn:
+        conn.execute("INSERT OR IGNORE INTO subtasks (project_id, name) VALUES (?, ?)",
+                     (project_id, name))
+        row = conn.execute("SELECT * FROM subtasks WHERE project_id = ? AND name = ?",
+                           (project_id, name)).fetchone()
+    return _row_to_subtask(row)
+
+
+def rename_subtask(subtask_id: int, name: str) -> bool:
+    """False if the project already has a subtask by that name."""
+    try:
+        with get_connection() as conn:
+            conn.execute("UPDATE subtasks SET name = ? WHERE id = ?", (name, subtask_id))
+    except sqlite3.IntegrityError:
+        return False
+    return True
+
+
+def delete_subtask(subtask_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM subtasks WHERE id = ?", (subtask_id,))
+
+
+# ---------------------------------------------------------------------------
 # Day helpers
 # ---------------------------------------------------------------------------
 
@@ -259,7 +310,7 @@ def _row_to_block(row: sqlite3.Row) -> TimeBlock:
         kind=row["kind"],
         start_time=row["start_time"],
         end_time=row["end_time"],
-        category=row["category"],
+        subtask_id=row["subtask_id"],
         title=row["title"],
         title_manual=bool(row["title_manual"]),
     )
@@ -280,10 +331,10 @@ def replace_blocks(day_id: int, blocks: list[TimeBlock]) -> None:
         conn.execute("DELETE FROM time_blocks WHERE day_id = ?", (day_id,))
         conn.executemany(
             """INSERT INTO time_blocks
-               (day_id, project_id, kind, start_time, end_time, category, title, title_manual)
+               (day_id, project_id, kind, start_time, end_time, subtask_id, title, title_manual)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             [(day_id, b.project_id, b.kind, b.start_time, b.end_time,
-              b.category, b.title, int(b.title_manual)) for b in blocks],
+              b.subtask_id, b.title, int(b.title_manual)) for b in blocks],
         )
 
 
@@ -319,19 +370,19 @@ def get_rules() -> list[TitleRule]:
     with get_connection() as conn:
         rows = conn.execute("SELECT * FROM title_rules ORDER BY pattern ASC").fetchall()
     return [TitleRule(id=r["id"], pattern=r["pattern"], project_id=r["project_id"],
-                      category=r["category"]) for r in rows]
+                      subtask_id=r["subtask_id"]) for r in rows]
 
 
-def upsert_rule(pattern: str, project_id: int, category: str = "A") -> None:
+def upsert_rule(pattern: str, project_id: int, subtask_id: Optional[int] = None) -> None:
     pattern = pattern.strip().lower()
     if not pattern:
         return
     with get_connection() as conn:
         conn.execute(
-            """INSERT INTO title_rules (pattern, project_id, category) VALUES (?, ?, ?)
+            """INSERT INTO title_rules (pattern, project_id, subtask_id) VALUES (?, ?, ?)
                ON CONFLICT(pattern) DO UPDATE SET
-                   project_id = excluded.project_id, category = excluded.category""",
-            (pattern, project_id, category),
+                   project_id = excluded.project_id, subtask_id = excluded.subtask_id""",
+            (pattern, project_id, subtask_id),
         )
 
 

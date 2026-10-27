@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from ctypes import wintypes
 from datetime import date, datetime
+from html import escape
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer, QRect, QPoint, QEvent
@@ -25,6 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from modeswitch import days
+from modeswitch.theme import current as theme
 from modeswitch.appbar import (
     AppBar, monitor_rects, CALLBACK_MSG, TASKBAR_CREATED_MSG, ABN_POSCHANGED, ABN_FULLSCREENAPP,
 )
@@ -37,17 +39,40 @@ from modeswitch.widgets.icon_buttons import SandwichButton
 
 
 def summary_text(timeline: DayTimeline) -> str:
-    """One line per project and letter: '0000 | 2h 35m | A'.
-    The letter is left off when every row has the same one."""
-    rows = timeline.model.summary()
-    show_letter = len({category for _, category, _ in rows}) > 1
-    lines = []
-    for project_id, category, minutes in rows:
+    """One row per project, '✦ 0000 | 2h 35m', as an HTML table, the ✦ in the
+    project's colour. Under it, a '⤷ name | 1h 20m' row for each subtask worked on;
+    time on the project with no subtask is only in the project's total."""
+    projects: dict = {}   # project_id -> [total, [(subtask_id, minutes)]]
+    for project_id, subtask_id, minutes in timeline.model.summary():
+        entry = projects.setdefault(project_id, [0, []])
+        entry[0] += minutes
+        if subtask_id is not None:
+            entry[1].append((subtask_id, minutes))
+    if not projects:
+        return ""
+    bar = f"<td style='color:{theme.faint}'>&nbsp;|&nbsp;</td>"
+    html = []
+    for project_id, (total, subs) in sorted(projects.items(),
+                                            key=lambda kv: (kv[0] is None, -kv[1][0])):
         proj = timeline.projects.get(project_id) if project_id else None
-        code = proj.code if proj else "----"
-        line = f"{code:<4} | {fmt_duration(minutes):>6}"
-        lines.append(f"{line} | {category}" if show_letter else line)
-    return "\n".join(lines)
+        color = proj.color if proj else theme.track
+        html.append(f"<tr><td style='color:{color}'>✦&nbsp;</td>"
+                    f"<td>{proj.code if proj else '----'}</td>{bar}"
+                    f"<td align='right'>{fmt_duration(total)}</td></tr>")
+        for subtask_id, minutes in sorted(subs, key=lambda r: -r[1]):
+            sub = timeline.subtasks.get(subtask_id)
+            name = escape(_shorten(sub.name if sub else "?", SUBTASK_CHARS))
+            html.append(f"<tr style='color:{theme.muted}'><td></td>"
+                        f"<td>⤷&nbsp;{name}</td>{bar}"
+                        f"<td align='right'>{fmt_duration(minutes)}</td></tr>")
+    return f"<table align='center' cellspacing='0' cellpadding='0'>{''.join(html)}</table>"
+
+
+SUBTASK_CHARS = 9   # what fits in the ribbon's summary beside the time
+
+
+def _shorten(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
 class RibbonWindow(QWidget):
@@ -100,13 +125,14 @@ class RibbonWindow(QWidget):
         header.addWidget(self._lunch)
         self._date_label = QLabel()
         self._date_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._date_label.setStyleSheet("font-size: 11px; color: #aaa;")
+        self._date_label.setProperty("role", "muted")
+        self._date_label.setStyleSheet("font-size: 11px;")
         header.addWidget(self._date_label, stretch=1)
         self._collapse_btn = QToolButton()
         self._collapse_btn.setText("−")
         self._collapse_btn.setFixedSize(20, 20)
         self._collapse_btn.setCursor(Qt.CursorShape.ArrowCursor)
-        self._collapse_btn.setToolTip("Minimise to just the slider")
+        self._collapse_btn.setToolTip("Minimise to just the slider. Click the slider to expand it again")
         self._collapse_btn.clicked.connect(lambda: self.set_collapsed(True))
         header.addWidget(self._collapse_btn)
         root.addWidget(self._header)
@@ -126,11 +152,12 @@ class RibbonWindow(QWidget):
         self._summary_label = QLabel("")
         self._summary_label.setFont(QFont("Consolas", 8))
         self._summary_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._summary_label.setStyleSheet("color: #ccc;")
+        self._summary_label.setTextFormat(Qt.TextFormat.RichText)
         root.addWidget(self._summary_label)
 
         self._review_btn = QPushButton("Review")
         self._review_btn.setCheckable(True)
+        self._review_btn.setToolTip("Open or close past days, projects and the tracker")
         self._review_btn.clicked.connect(self._toggle_review)
         self._btn_holder = QWidget()
         btn_row = QHBoxLayout(self._btn_holder)
@@ -141,8 +168,8 @@ class RibbonWindow(QWidget):
     @staticmethod
     def _divider() -> QFrame:
         line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("color: #444;")
+        line.setObjectName("divider")
+        line.setFixedHeight(1)
         return line
 
     # ------------------------------------------------------------------
@@ -328,13 +355,13 @@ class RibbonWindow(QWidget):
         if day.out_source == "computed":
             left = model.work_end - now_min()
             if left > 0:
-                text, color = f"time left: {fmt_duration(left)}", "#aaa"
+                text, color = f"time left: {fmt_duration(left)}", theme.muted
             else:
-                text, color = f"overtime: +{fmt_duration(-left)}", "#f4a261"
+                text, color = f"overtime: +{fmt_duration(-left)}", theme.credit
         else:
-            credit = model.credit(days.target_minutes())
+            credit = model.credit(self.timeline.target())
             text = f"credit: {fmt_signed(credit)}"
-            color = "#f4a261" if credit >= 0 else "#e07070"
+            color = theme.credit if credit >= 0 else theme.debit
         self._status_label.setText(text)
         self._status_label.setStyleSheet(f"font-size: 11px; color: {color};")
 
@@ -374,6 +401,17 @@ class RibbonWindow(QWidget):
         if self._review and self._review.isVisible():
             for date_str in changed:
                 self._review.reload_day(date_str)
+
+    def on_settings_changed(self) -> None:
+        """Theme, working days, day lengths or colours changed."""
+        self.timeline.reload()
+        self._sync_header_buttons()
+        self._refresh_readouts()
+        self.update()
+        for w in self.findChildren(QWidget):
+            w.update()
+        if self._review:
+            self._review.refresh()
 
     def _on_review_changed(self) -> None:
         """Something was edited in the review panel; pick up today's changes."""

@@ -3,11 +3,9 @@ Add / Edit Project dialog — prompts for code, name, and color.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QColorDialog, QMessageBox
+    QPushButton, QMessageBox
 )
 
 from modeswitch.db import models
@@ -46,6 +44,7 @@ class AddProjectDialog(QDialog):
         self._color_preview = QPushButton()
         self._color_preview.setFixedSize(40, 24)
         self._apply_color_preview()
+        self._color_preview.setToolTip("Change colour")
         self._color_preview.clicked.connect(self._pick_color)
         color_row.addWidget(self._color_preview)
         color_row.addStretch()
@@ -68,10 +67,10 @@ class AddProjectDialog(QDialog):
         )
 
     def _pick_color(self) -> None:
-        initial = QColor(self._color)
-        color = QColorDialog.getColor(initial, self, "Choose Project Colour")
-        if color.isValid():
-            self._color = color.name()
+        from modeswitch.dialogs.colour_picker import pick_colour
+        color = pick_colour(self, self._color, "Choose Project Colour")
+        if color:
+            self._color = color
             self._apply_color_preview()
 
     def _on_ok(self) -> None:

@@ -11,8 +11,15 @@ from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import QToolButton
 
-OFF_BG = QColor("#2d2d2d")
-OFF_FG = QColor("#777777")
+from modeswitch.theme import current as theme
+
+
+def off_bg() -> QColor:
+    return theme.q("surface")
+
+
+def off_fg() -> QColor:
+    return theme.q("faint")
 
 
 class _IconButton(QToolButton):
@@ -35,7 +42,7 @@ class _IconButton(QToolButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         w, h = self.width(), self.height()
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(self.ON_BG if self.isChecked() else OFF_BG)
+        p.setBrush(self.ON_BG if self.isChecked() else off_bg())
         p.drawRoundedRect(QRectF(0, 0, w, h), 4, 4)
         self.paint_icon(p, w, h, self.isChecked())
         p.end()
@@ -50,7 +57,7 @@ class SunButton(_IconButton):
     TIP_OFF = "Mark as holiday"
 
     def paint_icon(self, p, w, h, on):
-        color = QColor("#ffd34d") if on else OFF_FG
+        color = QColor("#ffd34d") if on else off_fg()
         cx, cy = w / 2, h / 2
         p.setPen(QPen(color, max(1.0, w / 14), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         for k in range(8):
@@ -68,9 +75,9 @@ class SandwichButton(_IconButton):
     TIP_OFF = "No lunch today — click to add it back"
 
     def paint_icon(self, p, w, h, on):
-        bread = QColor("#e8b96a") if on else OFF_FG
-        lettuce = QColor("#6cc04a") if on else QColor("#5e5e5e")
-        tomato = QColor("#e0533d") if on else QColor("#686868")
+        bread = QColor("#e8b96a") if on else off_fg()
+        lettuce = QColor("#6cc04a") if on else off_fg().darker(120)
+        tomato = QColor("#e0533d") if on else off_fg().darker(110)
         # Side on: bread, lettuce, tomato, bread
         p.setPen(Qt.PenStyle.NoPen)
         x, width = w * 0.16, w * 0.68

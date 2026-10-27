@@ -1,10 +1,13 @@
 """
-CreditChart — hours worked per day against the nominal day, with the running
-credit balance above it.
+CreditChart — one value per day plotted as a dashed line, optionally against a
+nominal value drawn as a solid line.
 
-  • solid line  — the nominal day (8h)
-  • dashed line — hours actually worked each day
-  • headline    — total credit (+) or debit (−) over the days shown
+Two modes:
+  • "credit" — hours worked against the nominal working day. The headline is the
+               running balance; points are credit-coloured at or over the nominal
+               day and debit-coloured under it.
+  • "total"  — time on one thing (a project, lunch, commute). The headline is the
+               total and the average per counted day; points use the thing's colour.
 
 Holidays and days with nothing logged are shown on the axis but not counted.
 """
@@ -18,48 +21,52 @@ from PyQt6.QtCore import Qt, QEvent, QPointF, QRect, QRectF
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QToolTip, QWidget
 
+from modeswitch.theme import current as theme
 from modeswitch.timeutil import fmt_duration, fmt_signed
-
-CREDIT = QColor("#f4a261")
-DEBIT = QColor("#e07070")
-NOMINAL = QColor("#9a9a9a")
-GRID = QColor("#333333")
-TEXT = QColor("#aaaaaa")
-FAINT = QColor("#666666")
 
 HEAD_H = 34
 AXIS_W = 30
 FOOT_H = 18
 POINT_R = 3.5
+X_INSET = 26        # room either side for the first and last day labels
 
 
 @dataclass
 class ChartDay:
     day: date
-    worked: Optional[int]   # minutes; None for a day not counted
-    note: str = ""          # why it is not counted: "Holiday", "No data"
+    value: Optional[int]            # minutes; None for a day not counted
+    target: Optional[int] = None    # nominal minutes for that day, if there is one
+    note: str = ""                  # why it is not counted: "Holiday", "No data"
 
 
 class CreditChart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._days: list[ChartDay] = []
-        self._target = 480
+        self._mode = "credit"
+        self._color: Optional[str] = None
+        self._label = ""
         self._font = QFont("Segoe UI", 8)
         self._head_font = QFont("Segoe UI", 11, QFont.Weight.DemiBold)
         self.setMinimumHeight(120)
         self.setMouseTracking(True)
 
-    def set_days(self, days: list[ChartDay], target_minutes: int) -> None:
+    def set_series(self, days: list[ChartDay], mode: str = "credit",
+                   color: Optional[str] = None, label: str = "") -> None:
         self._days = days
-        self._target = target_minutes
+        self._mode = mode
+        self._color = color
+        self._label = label
         self.update()
 
     def _counted(self) -> list[ChartDay]:
-        return [d for d in self._days if d.worked is not None]
+        return [d for d in self._days if d.value is not None]
 
     def balance(self) -> int:
-        return sum(d.worked - self._target for d in self._counted())
+        return sum(d.value - (d.target or 0) for d in self._counted())
+
+    def _series_color(self) -> QColor:
+        return QColor(self._color) if self._color else theme.q("credit")
 
     # ------------------------------------------------------------------
     # Geometry
@@ -68,17 +75,20 @@ class CreditChart(QWidget):
         return QRect(AXIS_W, HEAD_H, self.width() - AXIS_W - 8, self.height() - HEAD_H - FOOT_H)
 
     def _hour_range(self) -> tuple[int, int]:
-        """Whole hours, always including an hour either side of the nominal day."""
-        nominal = self._target / 60
-        values = [d.worked / 60 for d in self._counted()] + [nominal - 1, nominal + 1]
-        return int(min(values)) - (1 if min(values) % 1 == 0 else 0), int(max(values)) + 1
+        values = [d.value / 60 for d in self._counted()]
+        values += [d.target / 60 for d in self._days if d.target is not None]
+        if self._mode == "credit":
+            targets = [d.target / 60 for d in self._days if d.target is not None] or [8]
+            values += [min(targets) - 1, max(targets) + 1]
+            return int(min(values)) - (1 if min(values) % 1 == 0 else 0), int(max(values)) + 1
+        return 0, max(1, int(max(values or [0])) + 1)
 
     def _x(self, i: int) -> float:
         r = self._plot_rect()
         n = len(self._days)
         if n == 1:
             return r.center().x()
-        return r.left() + 8 + i * (r.width() - 16) / (n - 1)
+        return r.left() + X_INSET + i * (r.width() - 2 * X_INSET) / (n - 1)
 
     def _y(self, minutes: float) -> float:
         r = self._plot_rect()
@@ -91,38 +101,43 @@ class CreditChart(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.fillRect(self.rect(), QColor("#252525"))
+        p.fillRect(self.rect(), theme.q("surface"))
         self._paint_headline(p)
         if not self._days:
             p.end()
             return
         self._paint_grid(p)
         self._paint_nominal(p)
-        self._paint_worked(p)
+        self._paint_values(p)
         self._paint_days(p)
         p.end()
 
     def _paint_headline(self, p: QPainter) -> None:
         counted = self._counted()
+        box = QRect(8, 4, self.width() - 16, 20)
         if not counted:
             p.setFont(self._font)
-            p.setPen(FAINT)
-            p.drawText(QRect(8, 6, self.width() - 16, 20), int(Qt.AlignmentFlag.AlignLeft),
-                       "No finished days to show yet")
+            p.setPen(theme.q("faint"))
+            p.drawText(box, int(Qt.AlignmentFlag.AlignLeft), "No finished days to show yet")
             return
-        bal = self.balance()
         p.setFont(self._head_font)
-        p.setPen(CREDIT if bal >= 0 else DEBIT)
-        if bal == 0:
-            headline = "On target"
+        if self._mode == "credit":
+            bal = self.balance()
+            p.setPen(theme.q("credit") if bal >= 0 else theme.q("debit"))
+            if bal == 0:
+                headline = "On target"
+            else:
+                headline = f"{fmt_duration(abs(bal))} {'in credit' if bal > 0 else 'to make up'}"
         else:
-            headline = f"{fmt_duration(abs(bal))} {'in credit' if bal > 0 else 'to make up'}"
-        p.drawText(QRect(8, 4, self.width() - 16, 20), int(Qt.AlignmentFlag.AlignLeft), headline)
+            total = sum(d.value for d in counted)
+            p.setPen(self._series_color())
+            headline = (f"{fmt_duration(total) if total else '0m'} {self._label}"
+                        f"  ·  {fmt_duration(round(total / len(counted))) or '0m'} a day")
+        p.drawText(box, int(Qt.AlignmentFlag.AlignLeft), headline)
         p.setFont(self._font)
-        p.setPen(TEXT)
+        p.setPen(theme.q("muted"))
         first = counted[0].day.strftime("%a %d %b")
-        p.drawText(QRect(8, 4, self.width() - 16, 20),
-                   int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+        p.drawText(box, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
                    f"{len(counted)} days since {first}")
 
     def _paint_grid(self, p: QPainter) -> None:
@@ -132,34 +147,53 @@ class CreditChart(QWidget):
         p.setFont(self._font)
         for h in range(lo, hi + 1, step):
             y = self._y(h * 60)
-            p.setPen(QPen(GRID, 1))
+            p.setPen(QPen(theme.q("grid"), 1))
             p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
-            p.setPen(FAINT)
+            p.setPen(theme.q("faint"))
             p.drawText(QRectF(0, y - 7, AXIS_W - 4, 14),
                        int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), f"{h}h")
 
     def _paint_nominal(self, p: QPainter) -> None:
+        """Solid line at each day's nominal value: a step where day lengths differ,
+        one flat line when every day is the same."""
+        points = [(i, d.target) for i, d in enumerate(self._days) if d.target is not None]
+        if not points:
+            return
         r = self._plot_rect()
-        y = self._y(self._target)
-        p.setPen(QPen(NOMINAL, 1.5))
-        p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
+        p.setPen(QPen(theme.q("muted"), 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        path = QPainterPath()
+        for k, (i, target) in enumerate(points):
+            left = r.left() if k == 0 else (self._x(points[k - 1][0]) + self._x(i)) / 2
+            right = r.right() if k == len(points) - 1 else (self._x(i) + self._x(points[k + 1][0])) / 2
+            y = self._y(target)
+            if k == 0:
+                path.moveTo(QPointF(left, y))
+            else:
+                path.lineTo(QPointF(left, y))
+            path.lineTo(QPointF(right, y))
+        p.drawPath(path)
 
-    def _paint_worked(self, p: QPainter) -> None:
-        points = [(i, d) for i, d in enumerate(self._days) if d.worked is not None]
+    def _paint_values(self, p: QPainter) -> None:
+        points = [(i, d) for i, d in enumerate(self._days) if d.value is not None]
+        color = self._series_color()
         if len(points) > 1:
             path = QPainterPath()
             for k, (i, d) in enumerate(points):
-                pt = QPointF(self._x(i), self._y(d.worked))
+                pt = QPointF(self._x(i), self._y(d.value))
                 path.moveTo(pt) if k == 0 else path.lineTo(pt)
-            pen = QPen(CREDIT, 1.5, Qt.PenStyle.DashLine)
+            pen = QPen(color, 1.5, Qt.PenStyle.DashLine)
             pen.setDashPattern([4, 3])
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPath(path)
         p.setPen(Qt.PenStyle.NoPen)
         for i, d in points:
-            p.setBrush(CREDIT if d.worked >= self._target else DEBIT)
-            p.drawEllipse(QPointF(self._x(i), self._y(d.worked)), POINT_R, POINT_R)
+            if self._mode == "credit":
+                p.setBrush(theme.q("credit") if d.value >= (d.target or 0) else theme.q("debit"))
+            else:
+                p.setBrush(color)
+            p.drawEllipse(QPointF(self._x(i), self._y(d.value)), POINT_R, POINT_R)
 
     def _paint_days(self, p: QPainter) -> None:
         r = self._plot_rect()
@@ -168,9 +202,9 @@ class CreditChart(QWidget):
         for i, d in enumerate(self._days):
             if i % every and i != len(self._days) - 1:
                 continue
-            p.setPen(TEXT if d.worked is not None else FAINT)
+            p.setPen(theme.q("muted") if d.value is not None else theme.q("faint"))
             label = d.day.strftime("%a %d")
-            if d.worked is None and d.note == "Holiday":
+            if d.value is None and d.note == "Holiday":
                 label += " ☀"
             p.drawText(QRectF(self._x(i) - 30, r.bottom() + 3, 60, FOOT_H - 3),
                        int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop), label)
@@ -196,6 +230,9 @@ class CreditChart(QWidget):
             return ""
         d = self._days[i]
         name = d.day.strftime("%a %d %b")
-        if d.worked is None:
+        if d.value is None:
             return f"{name}: {d.note or 'not counted'}"
-        return f"{name}: {fmt_duration(d.worked)} ({fmt_signed(d.worked - self._target)})"
+        text = f"{name}: {fmt_duration(d.value) or '0m'}"
+        if self._mode == "credit" and d.target is not None:
+            text += f" ({fmt_signed(d.value - d.target)} against {fmt_duration(d.target)})"
+        return text

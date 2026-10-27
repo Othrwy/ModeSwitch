@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QMessageBox
 )
 
-from modeswitch import calendar_sync, days
+from modeswitch import calendar_sync, days, theme
 from modeswitch.db.schema import init_db
 from modeswitch.timeutil import now_min, to_hhmm
 from modeswitch.windows.ribbon import RibbonWindow
@@ -99,9 +99,9 @@ class App:
         self.qapp.setQuitOnLastWindowClosed(False)
         self.qapp.setApplicationName("ModeSwitch")
 
-        self._apply_stylesheet()
-
         init_db()
+        theme.apply(self.qapp)
+        theme.hub().settings_changed.connect(self._on_settings_changed)
 
         self.ribbon = RibbonWindow()
         self.ribbon.show()
@@ -175,8 +175,11 @@ class App:
 
     def _open_settings(self) -> None:
         from modeswitch.windows.settings_dialog import SettingsDialog
-        dlg = SettingsDialog(self.ribbon)
-        dlg.exec()
+        SettingsDialog(self.ribbon).exec()   # announces its own changes on the hub
+
+    def _on_settings_changed(self) -> None:
+        theme.apply(self.qapp)
+        self.ribbon.on_settings_changed()
 
     def _exit(self) -> None:
         if not self.ribbon.end_time_is_set():
@@ -191,86 +194,6 @@ class App:
                 self.ribbon.save_out_time()
 
         self.qapp.quit()
-
-    # ------------------------------------------------------------------
-    def _apply_stylesheet(self) -> None:
-        self.qapp.setStyleSheet("""
-            QWidget {
-                background-color: #1e1e1e;
-                color: #e0e0e0;
-                font-family: "Segoe UI", sans-serif;
-                font-size: 12px;
-            }
-            QLineEdit, QSpinBox, QComboBox {
-                background: #2d2d2d;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 3px 6px;
-                color: #e0e0e0;
-            }
-            QLineEdit:focus, QSpinBox:focus {
-                border: 1px solid #888;
-            }
-            QPushButton, QToolButton {
-                background: #3a3a3a;
-                color: #e0e0e0;
-                border: none;
-                border-radius: 4px;
-                padding: 5px 10px;
-            }
-            QToolButton {
-                padding: 0;
-            }
-            QPushButton:hover, QToolButton:hover {
-                background: #4a4a4a;
-            }
-            QPushButton:pressed, QPushButton:checked, QToolButton:checked {
-                background: #555;
-            }
-            QScrollArea, QScrollBar {
-                background: #1e1e1e;
-                border: none;
-            }
-            QGroupBox {
-                border: 1px solid #444;
-                border-radius: 5px;
-                margin-top: 8px;
-                padding-top: 8px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 8px;
-                color: #aaa;
-            }
-            QTableWidget {
-                background: #252525;
-                gridline-color: #333;
-            }
-            QHeaderView::section {
-                background: #2d2d2d;
-                color: #aaa;
-                border: none;
-                padding: 4px;
-            }
-            QMenu {
-                background: #2d2d2d;
-                border: 1px solid #555;
-            }
-            QMenu::item {
-                padding: 4px 18px;
-            }
-            QMenu::item:selected {
-                background: #4a4a4a;
-            }
-            QMenu::item:disabled {
-                color: #666;
-            }
-            QToolTip {
-                background: #2d2d2d;
-                color: #e0e0e0;
-                border: 1px solid #555;
-            }
-        """)
 
     # ------------------------------------------------------------------
     def run(self) -> int:

@@ -25,7 +25,7 @@ class Section:
     start: int                       # minutes since midnight
     end: int
     project_id: Optional[int] = None
-    category: str = "A"
+    subtask_id: Optional[int] = None
     title: Optional[str] = None
     title_manual: bool = False
 
@@ -98,14 +98,14 @@ class DayModel:
     def credit(self, target_mins: int) -> int:
         return self.worked_minutes() - target_mins
 
-    def summary(self) -> list[tuple[Optional[int], str, int]]:
-        """(project_id, category, minutes) per project-and-letter pair, longest first."""
-        totals: dict[tuple[Optional[int], str], int] = {}
+    def summary(self) -> list[tuple[Optional[int], Optional[int], int]]:
+        """(project_id, subtask_id, minutes) per project-and-subtask pair, longest first."""
+        totals: dict[tuple[Optional[int], Optional[int]], int] = {}
         for s in self.sections:
             if s.kind == WORK:
-                key = (s.project_id, s.category)
+                key = (s.project_id, s.subtask_id)
                 totals[key] = totals.get(key, 0) + s.duration
-        rows = [(pid, cat, mins) for (pid, cat), mins in totals.items()]
+        rows = [(pid, sid, mins) for (pid, sid), mins in totals.items()]
         rows.sort(key=lambda r: (r[0] is None, -r[2]))
         return rows
 
@@ -252,12 +252,12 @@ class DayModel:
                 out.append(s)
                 continue
             if s.start < start:
-                out.append(Section(s.kind, s.start, start, s.project_id, s.category,
+                out.append(Section(s.kind, s.start, start, s.project_id, s.subtask_id,
                                    s.title, s.title_manual))
             if not any(x.kind == LUNCH for x in out):
                 out.append(Section(LUNCH, start, end))
             if s.end > end:
-                out.append(Section(s.kind, end, s.end, s.project_id, s.category,
+                out.append(Section(s.kind, end, s.end, s.project_id, s.subtask_id,
                                    s.title, s.title_manual))
         # A sliver shorter than MIN_LEN either side of lunch becomes part of lunch
         i = next(k for k, x in enumerate(out) if x.kind == LUNCH)
@@ -304,8 +304,9 @@ def refresh_titles(model: DayModel, meetings: list[tuple[int, int, str]]) -> Non
         s.title = derive_title(s, meetings)
 
 
-def match_rule(title: str, rules: list[tuple[str, int, str]]) -> Optional[tuple[int, str]]:
-    """rules are (pattern, project_id, category). Longest matching pattern wins."""
+def match_rule(title: str, rules: list[tuple[str, int, Optional[int]]]
+               ) -> Optional[tuple[int, Optional[int]]]:
+    """rules are (pattern, project_id, subtask_id). Longest matching pattern wins."""
     lowered = title.lower()
     hits = [r for r in rules if r[0] and r[0] in lowered]
     if not hits:
@@ -314,10 +315,10 @@ def match_rule(title: str, rules: list[tuple[str, int, str]]) -> Optional[tuple[
     return best[1], best[2]
 
 
-def apply_rules(model: DayModel, rules: list[tuple[str, int, str]]) -> None:
+def apply_rules(model: DayModel, rules: list[tuple[str, int, Optional[int]]]) -> None:
     """Give titled, unassigned sections the project their title is known by."""
     for s in model.sections:
         if s.kind == WORK and s.project_id is None and s.title:
             hit = match_rule(s.title, rules)
             if hit:
-                s.project_id, s.category = hit
+                s.project_id, s.subtask_id = hit

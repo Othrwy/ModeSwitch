@@ -98,10 +98,41 @@ def init_db() -> None:
                 project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 category    TEXT NOT NULL DEFAULT 'A'
             );
+
+            CREATE TABLE IF NOT EXISTS subtasks (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                name        TEXT NOT NULL,
+                UNIQUE (project_id, name)
+            );
         """)
+        _add_subtask_columns(conn)
         _seed_settings(conn)
         _seed_builtin_projects(conn)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _add_subtask_columns(conn: sqlite3.Connection) -> None:
+    """Sections and title rules used to carry a letter A-D (`category`, now unused);
+    they now carry a subtask. The first time this runs, letters B-D become subtasks of
+    that name on their project, and A becomes no subtask."""
+    for table in ("time_blocks", "title_rules"):
+        columns = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if "subtask_id" in columns:
+            continue
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN subtask_id INTEGER"
+                     " REFERENCES subtasks(id) ON DELETE SET NULL")
+        pairs = conn.execute(
+            f"SELECT DISTINCT project_id, category FROM {table}"
+            " WHERE project_id IS NOT NULL AND category != 'A'").fetchall()
+        for project_id, letter in pairs:
+            conn.execute("INSERT OR IGNORE INTO subtasks (project_id, name) VALUES (?, ?)",
+                         (project_id, letter))
+            subtask_id = conn.execute(
+                "SELECT id FROM subtasks WHERE project_id = ? AND name = ?",
+                (project_id, letter)).fetchone()[0]
+            conn.execute(f"UPDATE {table} SET subtask_id = ? WHERE project_id = ? AND category = ?",
+                         (subtask_id, project_id, letter))
 
 
 def _seed_settings(conn: sqlite3.Connection) -> None:

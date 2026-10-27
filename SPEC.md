@@ -1,6 +1,6 @@
 # ModeSwitch — Specification
 
-**Status:** v2 ribbon, timeline and review panel built (2026-10-13). Minimise, per-day project totals in review, and autostart added (2026-10-20). Ribbon reserves its screen space and can be dragged to any monitor edge (2026-10-21). Outlook sync working through classic Outlook (2026-10-22); Microsoft Graph route built but waiting on IT admin consent. Last updated 2026-10-22.
+**Status:** v2 ribbon, timeline and review panel built (2026-10-13). Minimise, per-day project totals in review, and autostart added (2026-10-20). Ribbon reserves its screen space and can be dragged to any monitor edge (2026-10-21). Outlook sync working through classic Outlook (2026-10-22); Microsoft Graph route built but waiting on IT admin consent. Themes, fuller Settings and a multi-purpose tracker chart added (2026-10-27). Last updated 2026-10-27.
 
 This file is the source of truth for what ModeSwitch is meant to do. Read it before changing the code. When a decision is made or a preference stated, record it here (section 11) in the same change as the code.
 
@@ -44,6 +44,7 @@ What changes in v2 **[decided]**: the UI becomes a vertical ribbon with a dragga
 - **R6 [decided]** Very bottom: a Review button (section 8), with an arrow pointing the way the review panel opens (`◀ Review` when docked on the right, `Review ▶` on the left).
 - **R7 [decided]** A minimise button collapses the ribbon to just the slider's width, still docked up the right edge. Clicking anywhere on the slider expands it again.
 - **R7a [decided]** The minimise button is a small `−` at the top right, beside the date. **[assumed]** Collapsed, the ribbon is 24px wide and shows sections, meetings, nodes and the now-line, with no text or boxes; hover tooltips still work, but nothing can be edited. Collapsing closes the review panel, and opening Review from the tray expands the ribbon. The collapsed state is remembered across restarts (`ribbon_collapsed` setting).
+- **R9 [decided]** Every button and setting shows a short explanation of what it does when the mouse rests on it for a moment. **[assumed]** Qt's standard tooltip delay (about 0.7 s). Toggle buttons (house, sandwich, sun) describe their current state and what clicking will do; colour swatches show the colour's hex code.
 
 Layout sketch (not to scale):
 
@@ -90,30 +91,31 @@ Layout sketch (not to scale):
 
 - **T9 [decided]** Left of each node: the time at that node (HH:MM).
 - **T10 [decided]** Left of each section: its duration (e.g. `1h 30m`), plus "Lunch" or "Commute" for those sections. Text wraps to fit within the section's height. Titles are **not** shown here (changed 2026-10-22; see T11).
-- **T11 [decided]** Event titles only appear when the mouse is over the event, and only on the half of the timeline away from the screen edge (the left half when docked on the right, the right half when docked on the left). **[assumed]** The title appears instantly, in a small box drawn over the text column at the top of the meeting. Overlapping meetings are listed together. A section with a hand-typed title but no meeting shows that title the same way. Hover tooltips still give times, project and letter anywhere, but no titles. When collapsed, titles come from the tooltip, on the inner half only.
+- **T11 [decided]** Event titles only appear when the mouse is over the event, and only on the half of the timeline away from the screen edge (the left half when docked on the right, the right half when docked on the left). **[assumed]** The title appears instantly, in a small box drawn over the text column at the top of the meeting. Overlapping meetings are listed together. A section with a hand-typed title (from before subtasks replaced Set title, P2a) but no meeting shows that title the same way. Hover tooltips still give times, project and subtask anywhere, but no titles. When collapsed, titles come from the tooltip, on the inner half only.
 - **T12 [decided]** Right of each section: a narrower column, just wide enough for a 4-digit project code in a small box.
-- **T13 [decided]** Below the code box: a small square box holding a single letter, A, B, C or D. Defaults to A.
+- **T13 [decided]** ~~Below the code box: a small square box holding a single letter, A–D.~~ Replaced 2026-10-27 by subtasks (P2a). There is no box under the code box. **[assumed]** A section's subtask name is written in small muted text under the code box, cut short with … if it does not fit, and in full in the hover tooltip.
 - **T14 [assumed]** A section's title comes from the background meeting it lines up with (same start and end, or the meeting covering most of the section). Sections with no matching meeting have no title.
 - **T15 [assumed]** Sections are filled with the project's colour (the `color` field already exists on projects). Background meetings are drawn as translucent bands so the two layers are easy to tell apart.
 - **T15a [decided]** Meeting colours: **grey** once a meeting has ended, **dark red** for later meetings, and a **pulsing red** for one starting within 30 minutes (T22). **[assumed]** A meeting that is on right now is a steady, brighter red. Every meeting on a past day is grey.
-- **T16 [assumed]** If a section is too short for both boxes, the letter box is dropped and shown on hover with the title. Below about 12px the code box is dropped too.
-- **T16a [decided]** A **white** tick on the slider marks the current time.
+- **T16 [assumed]** If a section is too short for the code box and the subtask name, the name is dropped and shown on hover. Below about 12px the code box is dropped too.
+- **T16a [decided]** A **white** tick on the slider marks the current time. **[assumed]** In the light theme it is near-black, so it stays visible; in a custom theme it is the "Current time line" colour.
 
 ### 4.4 Interactions
 
 | Action | Result | Status |
 |---|---|---|
-| Drag a node | Moves that node only; the section's duration changes. Snaps to **5 min**, and to the start or end of a background meeting when within **15 min** of it. | decided |
+| Drag a node | Moves that node only; the section's duration changes. Snaps to a grid (**5 min**), to the start or end of a background meeting when within **5 min** of it, and to the current time (T17a). Both distances are set in Settings. | decided |
 | Drag a section body | Moves both its nodes together; duration stays fixed. Snaps to **15 min**. Neighbouring sections stretch or shrink to fit. | decided |
 | Click the project code box | Dropdown to pick a project code. | decided |
-| Click the letter box | Dropdown to pick A / B / C / D. | decided |
 | Double-click the section line | Splits the section in two. The existing project code stays on the **top** half. | decided |
 | Right-click a section | Menu with Delete. The section **above** expands to fill the space. | decided |
-| Right-click a section | The same menu also offers Split here and Set title… (a hand-typed title, which sticks even if the section moves off a meeting). | assumed |
+| Right-click a section, including its project code box | **Assign subtask**: pick one of the project's subtasks from a dropdown, or **New subtask…** and type a name (P2a). The menu also offers Split here. | decided |
 | Click a node's time | Type a time directly, using v1's shorthand entry (`930` → `09:30`). | assumed |
 
-- **T17 [assumed]** When a meeting edge and the 5-min grid both apply, the meeting edge wins. Meeting snap applies to node drags only, not section-body drags. Holding **Alt** while dragging switches the meeting snap off, so a node can be placed near a meeting edge without jumping to it.
-- **T18 [assumed]** A split happens at the point clicked, snapped to 5 min. The new bottom half is unassigned, letter A.
+- **T17 [assumed]** When a meeting edge and the grid both apply, the meeting edge wins. Meeting snap applies to node drags only, not section-body drags. Holding **Alt** while dragging switches the meeting snap off, and the current-time snap too, so a node can be placed near a meeting edge without jumping to it.
+- **T17a [decided]** On today's timeline, a node dragged near the current time snaps to the current time rather than the grid marks either side of it. **[assumed]** The current time is treated as one more snap point, and the node goes to whichever of the nearest grid mark and the current time is closer.
+- **T17b [decided]** The grid step and the meeting-edge snap distance are set in Settings ("Dragging nodes"), both defaulting to **5 min**. The meeting-edge distance can be set to Off. **[assumed]** Section-body drags still snap to 15 min, as decided in the table above. The grid step also sets where a split lands.
+- **T18 [assumed]** A split happens at the point clicked, snapped to 5 min. The new bottom half is unassigned, with no subtask.
 - **T19 [assumed]** A node cannot be dragged past its neighbouring node; the minimum section length is 5 min.
 - **T20 [assumed]** Deleting the first section of the day makes the section below expand instead, since there is nothing above (a commute above does not count). The last remaining project section cannot be deleted.
 - **T20a [assumed]** Dragging the start-of-work or end-of-work node on a commute day carries the commute section with it at its current length. Dragging the commute's outer node changes the commute's length.
@@ -133,6 +135,7 @@ Layout sketch (not to scale):
 - **D3 [decided]** If Patrick does not set the end time himself, it is filled in from when the laptop was turned off.
 - **D4 [assumed]** Precedence for the end time: set by hand > detected turn-off > computed default (D2). Dragging or typing the end node counts as setting it by hand, and so does answering Yes to "Save out time?" on Exit.
 - **D5 [decided]** Leaving earlier or later than the 8-hour target is tracked as credits: credit = time worked − 8h, positive or negative.
+- **D5a [decided]** The working-day length is set in Settings: one length for every day ("Same length every day", 8h by default), or, with that unticked, a length for each working day. A day's credit, its computed end time (D2) and the credit chart (V9a) all use that day's own length. **[assumed]** Changing the lengths re-reckons past days' credit too; it does not move anyone's end times.
 - **D6 [decided]** Time worked = end − start − lunch. Commute does not count as work.
 - **D7 [decided]** Credits are tracked as a running balance on a chart in the review panel (V9a). The ribbon still shows today's time left, or today's credit once the end is real.
 
@@ -147,42 +150,64 @@ How on/off times are detected **[assumed]**:
 
 - **W1 [decided]** The house button toggles WFH for the day. WFH means no commute sections.
 - **W2 [decided]** Defaults: WFH on Monday, Tuesday and Thursday; commute on Wednesday.
-- **W3 [decided]** Commute sections default to 1 hour each.
+- **W3 [decided]** Commute sections default to 1 hour each. The usual commute time (each way) is set in Settings, and so is the usual lunch length. **[assumed]** Both apply to new days and when a commute or lunch is added back to a day, not to days already logged.
 - **W4 [decided]** On a commute day there are two commute sections: one ending at the day's start node, one beginning at the day's end node. They sit outside the 8 working hours.
 - **W5 [assumed]** Working days are Monday to Thursday (the v1 `working_days` setting is `1,2,3,4`, and the review panel hides Friday to Sunday).
 
-## 7. Projects, letters and the summary
+## 7. Projects, subtasks and the summary
 
 - **P1 [decided]** Projects are identified by a 4-digit code (e.g. `0000`).
-- **P2 [decided]** Each section carries one project code and one letter A–D.
-- **P3 [decided]** The letters A–D have no fixed meaning. They are free tags for Patrick to use however he likes; the tool attaches no labels or behaviour to them.
+- **P2 [decided]** Each section carries one project code and, optionally, one subtask of that project (P2a). This replaced the letters A–D on 2026-10-27.
+- **P2a [decided]** Subtasks are assigned by right-clicking a section's project code and choosing **Assign subtask**: pick an existing subtask of that project from a dropdown, or create one and type its name. They replace both the A–D letter box and the hand-typed section titles (Set title… is gone). **[assumed]**
+  - A subtask belongs to one project, so changing a section's project clears its subtask. Assign subtask is greyed out on unassigned sections.
+  - "None" in the dropdown takes the subtask off.
+  - Subtasks can also be added, renamed and deleted in the review panel's project table (V7b). Deleting one leaves its sections on the project with no subtask.
+  - Existing letters were converted once: B, C and D became subtasks of that name on their project, and A became no subtask. On this machine only A had been used, so nothing was converted.
+- **P3 [decided]** ~~The letters A–D have no fixed meaning.~~ Superseded by subtasks (P2a), which are free text.
 - **P4 [decided]** Smart defaults: the tool should know, for example, that the morning meeting titled "Daily" is `0000`.
-- **P5 [assumed]** Smart defaults work as title rules: a case-insensitive match on a section's title (T14) maps to a project code and letter. When Patrick assigns a code to a titled section by hand, that title is remembered and reused next time. **[decided]** There is no table for editing rules; they are only learned this way. Assigning a different project to the same title overwrites the rule.
+- **P5 [assumed]** Smart defaults work as title rules: a case-insensitive match on a section's title (T14) maps to a project code and subtask. When Patrick assigns a code or subtask to a titled section by hand, that title is remembered and reused next time. **[decided]** There is no table for editing rules; they are only learned this way. Assigning a different project to the same title overwrites the rule.
 - **P6 [assumed]** The code dropdown lists most recently used projects first (v1's `last_used` ordering).
-- **P7 [decided]** Below the timeline: a summary of projects worked on today and time spent on each, in the form `0000 | 2h 35m | A`.
-- **P7a [decided]** If every row in a summary has the same letter (all A, say), the letter column is left off: `0000 | 2h 35m`. This applies to each day's summary in the review panel separately.
-- **P8 [assumed]** The summary has one row per code-and-letter pair and excludes lunch and commute.
+- **P7 [decided]** Below the timeline: a summary of projects worked on today and time spent on each, in the form `0000 | 2h 35m`. **[assumed]** Under a project, one indented row per subtask worked on: `⤷ Calcs | 1h 20m`. Time on the project with no subtask is only in the project's total. Subtask names are cut short with … to fit the ribbon.
+- **P7a [decided]** ~~If every row has the same letter, the letter column is left off.~~ No longer needed: the summary has no letter column (P7).
+- **P7b [decided]** Each project row in the summary starts with a small ✦ in the project's colour: `✦ 0000 | 2h 35m`. **[assumed]** Unassigned time gets the theme's unassigned-track colour.
+- **P8 [assumed]** The summary excludes lunch and commute.
 - **P9 [open Q4]** v1 has built-in projects with non-numeric codes (`LNCH`, `COMM`, `OW`). Lunch and commute become section types in v2; what happens to `OW` (Other Way) is undecided.
 
 ## 8. Review panel
 
 - **V1 [decided]** The Review button expands the window, or opens a pop-out, to the **left** of the ribbon. **[assumed]** When the ribbon is docked on a left edge, it opens to the right instead. Days still run oldest to newest, left to right.
 - **V2 [decided]** It shows the day sliders for this week and all of last week, **past days only**. Today is left out, because it is already on the ribbon.
+- **V2a [decided]** Each week is set apart: alternate weeks have a slightly different background, and a thin line runs between one week's last day and the next week's Monday. **[assumed]** The newest week is the plain one. Background meetings have no coloured strip down their left side in the review panel (the ribbon keeps it).
 - **V3 [decided]** Friday, Saturday and Sunday are not shown.
 - **V4 [decided]** It can scroll further back in time.
-- **V5 [decided]** It contains the table for editing project codes and related settings.
+- **V5 [decided]** It contains the table for editing project codes and related settings, and a **⚙ Settings** button next to "+ Add project" that opens Settings (V9).
 - **V6 [assumed]** Each day is a column using the same vertical timeline widget as the ribbon, fully editable, with the day's total and credit beneath it. Columns run oldest to newest, left to right, so yesterday sits nearest the ribbon when it is docked on the right. All columns share one time scale.
-- **V6b [decided]** Beneath each day's slider, the total time per project for that day, in the same `0000 | 2h 35m | A` form as the ribbon summary (P7).
+- **V6b [decided]** Beneath each day's slider, the total time per project for that day, in the same `✦ 0000 | 2h 35m` form, with subtask rows, as the ribbon summary (P7).
 - **V6c [assumed]** Every column reserves room for as many summary rows as the longest day, so the timelines stay level on the shared time scale.
 - **V6a [assumed]** "Earlier" adds one more week on the left. A day with nothing logged shows "Add day", which creates it starting at 08:30.
 - **V7 [assumed]** The project table covers code, name and colour. It replaces the v1 Edit Modes dialog and the projects part of Settings.
+- **V7a [decided]** Lunch and Commute are listed at the top of the project table so their colours can be changed. They cannot be deleted or renamed. **[assumed]** Their colours are stored as the `lunch_color` and `commute_color` settings.
+- **V7b [decided]** Each project in the table has a small ⤷ arrow that expands the table to show that project's subtasks underneath it. **[assumed]** The arrow is faint when the project has no subtasks yet. Expanded, each subtask can be renamed in place or deleted (✕), and a "+ Add subtask" row adds one. Which projects are expanded is not remembered between sessions.
 - **V9a [decided]** Beside the project table, in place of the old title rules table, is a credit chart. A solid line shows the nominal day (8h, Mon–Thu), and a dashed line plots the hours actually worked each day, so Patrick can see whether he needs to make time up. **[assumed]**
   - It covers the same past days as the columns above, so "Earlier" lengthens it.
   - Above the chart is the running balance ("1h 15m in credit", "30m to make up", or "On target") and how many days it covers.
-  - Points are orange at or above 8h and red below. Hovering shows the day's hours and credit.
+  - Points are credit-coloured at or above the day's length and debit-coloured below. Hovering shows the day's hours and credit.
   - Holidays and days with nothing logged are on the axis but not counted.
+  - Where day lengths differ (D5a), the solid line steps to each day's own length.
+- **V9b [decided]** A "Track" dropdown above the chart switches it between Credit, Lunch, Commute and any one project. **[assumed]**
+  - For a project, lunch or commute, the dashed line is the time spent each day in that thing's colour, and the headline is the total and the average per day.
+  - Lunch also shows the usual lunch length as the solid line; commute and projects have no solid line.
+  - The choice is remembered (`chart_series` setting).
 - **V8 [assumed]** The v1 "Holiday" marking for a day moves into the review panel. **[decided]** Its button on each day is a small sun icon, gold when the day is a holiday.
-- **V9 [assumed]** Working days, default WFH days and launch-at-startup are in Settings, on the tray icon's menu.
+- **V9 [decided]** Settings opens from the tray menu and from the review panel. It holds:
+  - **Appearance:** dark, light or custom (section 13).
+  - **Working days:** seven round toggles, M T W T F S S. **[assumed]** Work-from-home default days use the same toggles.
+  - **Working-day length:** see D5a.
+  - **Usual commute time and lunch length:** see W3.
+  - **Dragging nodes:** grid step and meeting-edge snap distance; see T17b.
+  - **Launch at startup.**
+
+  **[assumed]** Saving applies everything straight away, with no restart. Number and time boxes have no arrow buttons: type a value or use the mouse wheel.
 
 ## 9. Outlook calendar integration
 
@@ -208,6 +233,12 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 
 | Date | Decision |
 |---|---|
+| 2026-10-27 | **Subtasks replace the A–D letters and Set title.** Right-click a section's code for Assign subtask (pick or create). Summaries list subtasks under their project; the review project table expands with ⤷ to show them (P2a, P7, V7b). |
+| 2026-10-27 | Hover tooltips explain every button and setting (R9). |
+| 2026-10-27 | Nodes snap to the current time when that is nearer than the grid (T17a). Meeting-edge snap distance drops from 15 to 5 min, and it and the grid step are adjustable in Settings (T17b). |
+| 2026-10-27 | **Themes:** dark, light and custom. A custom theme is a few hand-picked base colours, with everything else derived from them (and overridable). Every colour pick offers lighter/darker shades, colour-wheel matches and a readability check (section 13). |
+| 2026-10-27 | **Settings** opens from the review panel too. It now covers appearance, working days (seven M–S toggles), working-day length (same every day, or per day), usual commute and lunch (V9, D5a, W3). Day lengths feed credit and the chart. |
+| 2026-10-27 | Review panel: weeks set apart by alternate shading and a line between them; no left strip on meetings (V2a). Lunch and Commute in the project table for their colours (V7a). Summary rows start with a ✦ in the project's colour (P7b). The chart can track a project, lunch or commute (V9b). |
 | 2026-10-22 | **Open Q2 answered:** credits are a running balance, shown as a chart in the review panel: nominal 8h line, dashed line of hours worked each day (D7, V9a). It replaces the title rules table; rules are still learned automatically (P5). |
 | 2026-10-22 | Review panel shows past days only; today is on the ribbon (V2). The Review button has an arrow showing which way the panel opens (R6). The minimise button is `−` (R7a). |
 | 2026-10-22 | Holiday button is a sun icon (V8). Summaries leave the letter off when every row has the same one (P7a). New sandwich button takes lunch off a day or puts it back (R3a, T21b). |
@@ -236,7 +267,8 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 
 | File | Role |
 |---|---|
-| `main.py`, `modeswitch/app.py` | Entry point, tray icon (Show / Hide / Review / Sync calendar now / Settings / Exit), background calendar sync, dark stylesheet, save-out-time prompt on exit |
+| `main.py`, `modeswitch/app.py` | Entry point, tray icon (Show / Hide / Review / Sync calendar now / Settings / Exit), background calendar sync, applying settings changes, save-out-time prompt on exit |
+| `modeswitch/theme.py` | Colour themes: the tokens, dark and light presets, derived colours, colour maths (shades, harmonies, contrast), and the app-wide stylesheet |
 | `modeswitch/day_model.py` | The rules of the timeline: nodes, sections, move, split, delete, commute, credits, titles, title rules. No Qt, no database |
 | `modeswitch/days.py` | Loads, creates and saves whole days; backfills forgotten end times |
 | `modeswitch/system_times.py` | Reads power-on time from the Windows event log |
@@ -249,9 +281,11 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 | `modeswitch/widgets/icon_buttons.py` | The holiday (sun) and lunch (sandwich) toggles |
 | `modeswitch/widgets/time_input.py` | Shorthand time parsing (`930` → `09:30`), from v1 |
 | `modeswitch/windows/ribbon.py` | The ribbon window: docking, dragging to another edge, minimise, heartbeat, summary and time-left readouts |
-| `modeswitch/windows/review_panel.py` | Review panel: day columns, projects table, credit chart |
-| `modeswitch/widgets/credit_chart.py` | The credit chart: hours worked per day against the nominal day, and the running balance |
-| `modeswitch/windows/settings_dialog.py` | Working days, WFH days, autostart |
+| `modeswitch/windows/review_panel.py` | Review panel: day columns grouped by week, projects table (with Lunch and Commute, and expandable subtasks), tracker chart |
+| `modeswitch/widgets/credit_chart.py` | The tracker chart: credit against the nominal day, or time on a project, lunch or commute |
+| `modeswitch/windows/settings_dialog.py` | Settings: appearance, working days, day lengths, usual lunch and commute, autostart |
+| `modeswitch/dialogs/colour_picker.py` | Colour picker with shades, colour-wheel matches, colours in use and a readability check |
+| `modeswitch/dialogs/theme_editor.py` | Custom theme editor |
 | `modeswitch/dialogs/add_project.py` | New-project dialog, from v1 |
 | `legacy_v1/` | Retired v1 UI files, kept for reference only. They no longer run. Safe to delete |
 
@@ -270,9 +304,27 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 
 - Database: `%LOCALAPPDATA%\ModeSwitch\modeswitch.db`. Set the `MODESWITCH_DB` environment variable to point the app at a different file for testing.
 - `days`: date, `in_time` / `out_time` (start and end of work, excluding commute), `in_source` (manual / detected), `out_source` (manual / detected / computed), `wfh`, `last_seen`, `is_holiday`.
-- `time_blocks`: one row per section — `kind` (work / lunch / commute), start, end, nullable `project_id`, `category` (A–D), `title`, `title_manual`. A day's rows are replaced as a set on every save.
+- `time_blocks`: one row per section — `kind` (work / lunch / commute), start, end, nullable `project_id`, nullable `subtask_id`, `title`, `title_manual`. The old `category` column (A–D) is left in place but no longer used; `title_manual` is only set on titles typed before Set title was removed. A day's rows are replaced as a set on every save.
 - `meetings`: cached calendar events per day.
-- `title_rules`: lower-case text, project, letter. Matched anywhere in a section's title; the longest match wins. Assigning a project to a titled section adds or updates a rule. There is no UI for them.
-- `settings`: `working_days`, `wfh_days`, `target_minutes`, `lunch_minutes`, `commute_minutes`, `day_floor`.
+- `subtasks`: `project_id`, `name`, unique per project. Deleted with their project.
+- `title_rules`: lower-case text, project, subtask. Matched anywhere in a section's title; the longest match wins. Assigning a project to a titled section adds or updates a rule. There is no UI for them.
+- `settings`: `working_days`, `wfh_days`, `target_minutes`, `target_same`, `target_by_day` (`1:480,2:450,…`), `lunch_minutes`, `commute_minutes`, `node_snap`, `meeting_snap`, `day_floor`, `lunch_color`, `commute_color`, `theme` (dark / light / custom), `theme_custom` (JSON: `{"base": "dark", "tokens": {…}}`), `chart_series`, plus the ribbon's `ribbon_collapsed`, `dock_screen`, `dock_edge`.
 - Lunch and commute are section kinds, not projects; the v1 `LNCH` and `COMM` projects are gone. `OW` is still seeded (open Q4).
 - A v1-shaped database, if one is found, is renamed to `modeswitch.v1.bak` and a fresh one started. None existed on this machine at build time.
+
+## 13. Colours and themes
+
+- **C1 [decided]** Three themes, chosen in Settings: **dark** (the original look), **light**, and **custom**.
+- **C2 [decided]** In a custom theme every colour can be picked with a colour picker. Picking should make it easy to choose colours that go together, following good UI practice and colour theory rather than one fixed "shadow of" button.
+- **C3 [assumed]** How that is done:
+  - **Base and derived colours.** Only the base colours are picked by hand: background, panels, text, accent, credit, debit, now-line, nodes, and the four meeting states. Secondary and faint text, borders, hover and pressed buttons, chart grid lines, the unassigned track and the alternate-week shading are derived from them. That way the whole theme stays consistent when one base colour changes. Each derived colour has an **Auto** tick; untick it to pick that colour by hand.
+  - **The picker** offers four things:
+    - nine lighter-to-darker shades of the current colour, for borders, shadows and highlights; this is the "shadow of" idea;
+    - colour-wheel matches to the accent colour: complementary, analogous, triadic and split-complementary;
+    - colours already in use by projects and the theme;
+    - a readability check (WCAG contrast ratio) when the colour is text on the background.
+
+    "More…" opens the full Windows colour dialog.
+  - **Starting point.** A custom theme starts as a copy of the dark or light preset, with a button to start again from either. The theme editor also shows the readability of text on the background.
+- **C4 [assumed]** The same picker is used for project colours and the Lunch and Commute colours. Those belong to the projects, not the theme, so they stay the same across themes.
+- **C5 [assumed]** Changing the theme applies at once, with no restart. The house, sun and sandwich icons keep their own "on" colours in every theme.
