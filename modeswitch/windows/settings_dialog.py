@@ -1,5 +1,6 @@
 """
-Settings dialog — appearance, working week, day length, lunch, commute, startup.
+Settings dialog — getting started (the guide and Connect to Outlook), appearance,
+working week, day length, lunch, commute, snapping, startup.
 Opened from the tray menu and from the review panel. Projects (and the lunch and
 commute colours) are edited in the review panel.
 
@@ -8,9 +9,6 @@ Saving announces the change on theme.hub(), and every window refreshes itself.
 from __future__ import annotations
 
 import json
-import os
-import sys
-from pathlib import Path
 
 from PyQt6.QtCore import QTime, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -18,49 +16,14 @@ from PyQt6.QtWidgets import (
     QLabel, QMessageBox, QPushButton, QSpinBox, QTimeEdit, QToolButton, QVBoxLayout, QWidget
 )
 
-from modeswitch import days, theme as theme_mod
+from modeswitch import autostart, calendar_sync, days, theme as theme_mod
 from modeswitch.db import models
 from modeswitch.theme import current as theme
-
-STARTUP_FOLDER = Path(os.environ.get("APPDATA", "")) / \
-    "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-SHORTCUT_NAME = "ModeSwitch.lnk"
 
 DAY_LETTERS = {1: "M", 2: "T", 3: "W", 4: "T", 5: "F", 6: "S", 7: "S"}
 DAY_NAMES = {1: "Monday", 2: "Tuesday", 3: "Wednesday", 4: "Thursday",
              5: "Friday", 6: "Saturday", 7: "Sunday"}
 THEMES = [("dark", "Dark"), ("light", "Light"), ("custom", "Custom")]
-
-
-def _autostart_enabled() -> bool:
-    return (STARTUP_FOLDER / SHORTCUT_NAME).exists()
-
-
-def create_autostart_shortcut() -> None:
-    try:
-        import win32com.client
-        shell = win32com.client.Dispatch("WScript.Shell")
-        shortcut = shell.CreateShortCut(str(STARTUP_FOLDER / SHORTCUT_NAME))
-        if getattr(sys, "frozen", False):
-            shortcut.Targetpath = sys.executable
-            shortcut.WorkingDirectory = str(Path(sys.executable).parent)
-        else:
-            # pythonw so no console window is left open at login
-            exe = Path(sys.executable)
-            pythonw = exe.with_name("pythonw.exe")
-            project = Path(__file__).parent.parent.parent
-            shortcut.Targetpath = str(pythonw if pythonw.exists() else exe)
-            shortcut.Arguments = f'"{project / "main.py"}"'
-            shortcut.WorkingDirectory = str(project)
-        shortcut.save()
-    except Exception as e:
-        QMessageBox.warning(None, "Autostart", f"Could not create shortcut:\n{e}")
-
-
-def _remove_autostart_shortcut() -> None:
-    path = STARTUP_FOLDER / SHORTCUT_NAME
-    if path.exists():
-        path.unlink()
 
 
 def _minutes(t: QTime) -> int:
@@ -121,6 +84,27 @@ class SettingsDialog(QDialog):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
+
+        # --- Getting started: the guide, and connecting the calendar ---
+        start = QGroupBox("Getting started")
+        vbox = QVBoxLayout(start)
+        self._calendar_status = QLabel()
+        self._calendar_status.setProperty("role", "muted")
+        self._calendar_status.setWordWrap(True)
+        vbox.addWidget(self._calendar_status)
+        row = QHBoxLayout()
+        outlook = QPushButton("Connect to Outlook…")
+        outlook.setToolTip("Check and set up reading your calendar, step by step")
+        outlook.clicked.connect(self._open_outlook)
+        row.addWidget(outlook)
+        guide = QPushButton("What ModeSwitch does…")
+        guide.setToolTip("A short guide: what it is for, its features, and the controls")
+        guide.clicked.connect(self._open_guide)
+        row.addWidget(guide)
+        row.addStretch()
+        vbox.addLayout(row)
+        layout.addWidget(start)
+        self._update_calendar_status()
 
         # --- Appearance ---
         look = QGroupBox("Appearance")
@@ -232,8 +216,9 @@ class SettingsDialog(QDialog):
         startup = QGroupBox("Startup")
         hbox = QHBoxLayout(startup)
         self._autostart = QCheckBox("Launch ModeSwitch when Windows starts")
-        self._autostart.setChecked(_autostart_enabled())
-        self._autostart.setToolTip("Adds a shortcut to your Windows Startup folder")
+        self._autostart.setChecked(autostart.is_enabled())
+        self._autostart.setToolTip("Starts ModeSwitch when you log in, unlock or wake the "
+                                   "laptop, if it is not already running")
         hbox.addWidget(self._autostart)
         layout.addWidget(startup)
 
@@ -255,6 +240,27 @@ class SettingsDialog(QDialog):
         self._update_lengths()
 
     # ------------------------------------------------------------------
+    def _update_calendar_status(self) -> None:
+        if calendar_sync.is_signed_in():
+            text = "Calendar: read from Microsoft 365 (signed in to Microsoft Graph)."
+        elif not calendar_sync.classic_outlook_path():
+            text = "Calendar: not connected. Classic Outlook was not found."
+        else:
+            profile = (models.get_setting("outlook_profile", "")
+                       or calendar_sync.outlook_profiles()[1])
+            text = (f"Calendar: read through classic Outlook, profile “{profile}”."
+                    if profile else "Calendar: classic Outlook has not been set up yet.")
+        self._calendar_status.setText(text)
+
+    def _open_outlook(self) -> None:
+        from modeswitch.dialogs.outlook_setup import OutlookSetupDialog
+        OutlookSetupDialog(self).exec()
+        self._update_calendar_status()
+
+    def _open_guide(self) -> None:
+        from modeswitch.dialogs.guide import GuideDialog
+        GuideDialog(self).exec()
+
     def _update_lengths(self) -> None:
         same = self._same.isChecked()
         self._all_length.setEnabled(same)
@@ -292,10 +298,13 @@ class SettingsDialog(QDialog):
         models.set_setting("meeting_snap", str(self._meeting_snap.value()))
 
         if self._autostart.isChecked():
-            if not _autostart_enabled():
-                create_autostart_shortcut()
+            if not autostart.is_enabled():
+                try:
+                    autostart.enable()
+                except Exception as e:
+                    QMessageBox.warning(self, "Autostart", f"Could not set up autostart:\n{e}")
         else:
-            _remove_autostart_shortcut()
+            autostart.disable()
 
         self.accept()
         theme_mod.hub().settings_changed.emit()

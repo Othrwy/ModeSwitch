@@ -2,7 +2,11 @@
 DayTimeline — one day drawn as a vertical slider, top (start) to bottom (end).
 
 Two layers:
-  • background — calendar meetings, read-only, drawn muted
+  • background — calendar meetings, read-only, drawn muted. Overlapping meetings
+                 stack their transparency, so a double-booked spell reads deeper; a
+                 hairline marks each one's start and end inside the overlap, and their
+                 edge strips sit side by side. Hovering lists every meeting under the
+                 mouse with its times and outlines each one, so none hides another.
   • foreground — the sections of the day, with a node at each boundary
 
 Interactions:
@@ -13,6 +17,10 @@ Interactions:
   • double-click a section → split it there
   • right-click a section  → assign subtask / split / delete
   • click the code box     → pick a project from a dropdown
+
+The end of the day is locked to the target mark (8h of work after the start, plus
+lunch and breaks) until unlocked from the right-click menu. When the end is anywhere
+else, a hollow node marks where the target falls; dropping the end on it locks it again.
 """
 from __future__ import annotations
 
@@ -59,6 +67,24 @@ ALERT_MINS = 30     # meetings starting this soon pulse
 LUNCH_DEFAULT_START = 12 * 60   # where lunch goes when it is put back on a day
 
 KIND_LABEL = {LUNCH: "Lunch", COMMUTE: "Commute"}
+LANE_STEP = 4       # edge strips of overlapping meetings sit this far apart
+
+
+def meeting_lanes(meetings: list[tuple[int, int, str]]) -> tuple[list[int], list[bool]]:
+    """For each meeting, its lane (the first free one, like a calendar's columns when
+    meetings clash) and whether it overlaps any other meeting."""
+    lanes = [0] * len(meetings)
+    lane_ends: list[int] = []
+    for i in sorted(range(len(meetings)), key=lambda i: (meetings[i][0], -meetings[i][1])):
+        start, end, _ = meetings[i]
+        free = next((k for k, e in enumerate(lane_ends) if e <= start), len(lane_ends))
+        if free == len(lane_ends):
+            lane_ends.append(end)
+        lane_ends[free] = end
+        lanes[i] = free
+    overlaps = [any(j != i and s2 < e1 and e2 > s1 for j, (s2, e2, _) in enumerate(meetings))
+                for i, (s1, e1, _) in enumerate(meetings)]
+    return lanes, overlaps
 
 
 class DayTimeline(QWidget):
@@ -119,8 +145,11 @@ class DayTimeline(QWidget):
         self.kind_colors = days.kind_colors()
         self.node_snap = max(1, models.get_int_setting("node_snap", 5))
         self.meeting_snap = max(0, models.get_int_setting("meeting_snap", 5))
-        if self._follow_clock():
-            days.save_model(self.day, self.model)
+        if self._is_today():
+            end = self.model.work_end
+            self._apply_lock()   # breaks or the day's length may have changed
+            if self.model.work_end != end:
+                days.save_model(self.day, self.model)
         self._on_clock()
         self.update()
 
@@ -209,7 +238,43 @@ class DayTimeline(QWidget):
         self.day.out_source = "held"
         self._commit()
 
+    def end_locked(self) -> bool:
+        """The end sits on the target mark, or on the clock once that has passed."""
+        return bool(self.day) and self.day.out_source == "computed"
+
+    def can_lock_end(self) -> bool:
+        return (self._is_today() and bool(self.model and self.model.sections)
+                and self.model.sections[self.model.work_end_node() - 1].kind == WORK)
+
+    def set_end_locked(self, locked: bool) -> None:
+        """Lock the end to the target mark, or free it to be dragged."""
+        if locked:
+            self.day.out_source = "computed"
+        else:
+            held = self._is_today() and self.model.work_end < now_min()
+            self.day.out_source = "held" if held else "manual"
+        self._commit()
+
+    def target_mark(self) -> Optional[int]:
+        """Where the target is reached, when the end is somewhere else; otherwise None."""
+        if not self.model or not self.model.sections:
+            return None
+        if self.model.sections[self.model.work_end_node() - 1].kind != WORK:
+            return None
+        mark = self.model.target_end(self.target())
+        return None if mark == self.model.work_end else mark
+
+    def _relock_if_on_mark(self, k: int) -> None:
+        """An end dropped back on the target mark locks to it again, unless the mark
+        has already passed (then it records stopping work at the mark)."""
+        if (k == self.model.work_end_node() and self.can_lock_end()
+                and self.model.work_end == self.model.target_end(self.target())
+                and self.model.work_end >= now_min()):
+            self.day.out_source = "computed"
+
     def _commit(self) -> None:
+        if self.end_locked():
+            self._apply_lock()   # e.g. a section was just given the Break project
         days.save_model(self.day, self.model)
         self.update()
         self.changed.emit()
@@ -220,15 +285,19 @@ class DayTimeline(QWidget):
         edit()
         if self.model.work_start != start:
             self.day.in_source = "manual"
-        if self.model.work_end != end:
+        if self.end_locked():
+            self._apply_lock()   # nothing moves a locked end
+        elif self.model.work_end != end:
             # Set earlier than now: that is when work stopped, so it stays put.
             # Set now or later: still working, so it follows the clock once passed.
             held = self._is_today() and self.model.work_end < now_min()
             self.day.out_source = "held" if held else "manual"
-        elif self.day.out_source == "computed":
-            self.model.apply_computed_end(self.target())
-            self._follow_clock()
         refresh_titles(self.model, self.meetings)
+
+    def _apply_lock(self) -> None:
+        if self.end_locked():
+            self.model.apply_computed_end(self.target())
+        self._follow_clock()
 
     def _follow_clock(self) -> bool:
         """On today, once the clock passes the end node, the end follows the current
@@ -254,7 +323,7 @@ class DayTimeline(QWidget):
         s = self.model.sections
         end = s[-1].end
         if self._is_today():
-            end = max(end, now_min())
+            end = max(end, now_min(), self.target_mark() or 0)
         return s[0].start, min(24 * 60, end + END_BUFFER)
 
     def _ppm(self) -> float:
@@ -306,31 +375,45 @@ class DayTimeline(QWidget):
         self._paint_meetings(p)
         self._paint_sections(p)
         self._paint_now_line(p)
+        self._paint_target_mark(p)
         self._paint_nodes(p)
         self._paint_hover_title(p)
         p.end()
 
-    def _paint_meetings(self, p: QPainter) -> None:
-        r0, r1 = self._range()
+    def _meeting_colors(self, start: int, end: int) -> tuple[QColor, QColor]:
+        """(fill, edge) for a meeting: grey once over, red later, pulsing when soon."""
         now = now_min()
         today = date.today().isoformat()
-        for start, end, _title in self.meetings:
+        if self.day.date < today or (self.day.date == today and end <= now):
+            return theme.q("meeting_past", 45), theme.q("meeting_past", 130)
+        if self.day.date == today and 0 < start - now <= ALERT_MINS:
+            glow = 0.5 + 0.5 * math.sin(self._pulse_phase)
+            return (theme.q("meeting_soon", int(50 + 70 * glow)),
+                    theme.q("meeting_soon", int(160 + 95 * glow)))
+        if self.day.date == today and start <= now:
+            return theme.q("meeting_now", 80), theme.q("meeting_now", 220)
+        return theme.q("meeting_later", 65), theme.q("meeting_later", 190)
+
+    def _paint_meetings(self, p: QPainter) -> None:
+        r0, r1 = self._range()
+        lanes, overlaps = meeting_lanes(self.meetings)
+        for (start, end, _title), lane, overlapping in zip(self.meetings, lanes, overlaps):
             if end <= r0 or start >= r1:
                 continue
             y1, y2 = self._y(max(start, r0)), self._y(min(end, r1))
-            if self.day.date < today or (self.day.date == today and end <= now):
-                fill, edge = theme.q("meeting_past", 45), theme.q("meeting_past", 130)
-            elif self.day.date == today and 0 < start - now <= ALERT_MINS:
-                glow = 0.5 + 0.5 * math.sin(self._pulse_phase)
-                fill = theme.q("meeting_soon", int(50 + 70 * glow))
-                edge = theme.q("meeting_soon", int(160 + 95 * glow))
-            elif self.day.date == today and start <= now:
-                fill, edge = theme.q("meeting_now", 80), theme.q("meeting_now", 220)
-            else:
-                fill, edge = theme.q("meeting_later", 65), theme.q("meeting_later", 190)
+            fill, edge = self._meeting_colors(start, end)
+            # Overlaps stack their transparency, so a double-booked spell reads deeper
             p.fillRect(QRect(0, y1, self.width(), max(2, y2 - y1)), fill)
+            strip_x = lane * LANE_STEP if self.meeting_edges and not self._compact else 0
             if self.meeting_edges:
-                p.fillRect(QRect(0, y1, 2, max(2, y2 - y1)), edge)
+                p.fillRect(QRect(strip_x, y1, 2, max(2, y2 - y1)), edge)
+            if overlapping and not self._compact:
+                # Hairlines where it starts and ends, which would otherwise be lost
+                # inside the deeper band of the meeting it overlaps
+                line = QColor(edge)
+                line.setAlpha(edge.alpha() // 2)
+                for y in (y1, y2 - 1):
+                    p.fillRect(QRect(strip_x + 2, y, self.width() - strip_x - 2, 1), line)
 
     def _paint_sections(self, p: QPainter) -> None:
         fm = QFontMetrics(self._font)
@@ -392,39 +475,111 @@ class DayTimeline(QWidget):
             p.setPen(QPen(theme.q("now_line"), 1))
             p.drawLine(self._track_x - 12, y, self._track_x + 12, y)
 
-    def _hover_titles(self) -> tuple[list[str], int]:
-        """Titles under the mouse, and the y to draw them from. Only on the inner half."""
+    def _hover_meetings(self) -> list[int]:
+        """Every meeting under the mouse, earliest first. Picked by time, not by which
+        is drawn on top, so an overlapped meeting is never hidden. Inner half only."""
+        if (self._hover is None or not self.model or self._drag or self._compact or self._narrow
+                or not self._inner_side(self._hover.x())):
+            return []
+        t = self._t(self._hover.y())
+        hits = [i for i, (start, end, _) in enumerate(self.meetings) if start <= t < end]
+        return sorted(hits, key=lambda i: self.meetings[i][:2])
+
+    def _hover_titles(self) -> tuple[list[tuple[str, str]], int]:
+        """(times, title) under the mouse, and the y to draw them from. Only on the
+        inner half. Times are only given where meetings overlap, to tell them apart."""
+        hits = self._hover_meetings()
+        if hits:
+            _, overlaps = meeting_lanes(self.meetings)
+            timed = any(overlaps[i] for i in hits)
+            titles = [(f"{to_hhmm(start)}–{to_hhmm(end)}" if timed else "", title)
+                      for start, end, title in (self.meetings[i] for i in hits)]
+            return titles, self._y(self.meetings[hits[0]][0])
         if (self._hover is None or not self.model or self._drag or self._compact or self._narrow
                 or not self._inner_side(self._hover.x())):
             return [], 0
         y = self._hover.y()
-        t = self._t(y)
-        hits = [(start, title) for start, end, title in self.meetings if start <= t <= end]
-        if hits:
-            return [title for _, title in hits], self._y(min(start for start, _ in hits))
         i = self._section_at(y)
         if i is not None and self.model.sections[i].title:
             s = self.model.sections[i]
-            return [s.title], self._y(s.start)
+            return [("", s.title)], self._y(s.start)
         return [], 0
 
+    def _paint_hover_outlines(self, p: QPainter) -> None:
+        """Outline each hovered meeting that overlaps another, so its full extent shows
+        through the stack. Nested a step in per lane so the outlines do not coincide."""
+        hits = self._hover_meetings()
+        lanes, overlaps = meeting_lanes(self.meetings)
+        if not any(overlaps[i] for i in hits):
+            return
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for i in hits:
+            start, end, _ = self.meetings[i]
+            _, edge = self._meeting_colors(start, end)
+            edge.setAlpha(255)
+            inset = 1 + 2 * lanes[i]
+            p.setPen(QPen(edge, 1))
+            p.drawRect(QRectF(inset + 0.5, self._y(start) + 0.5,
+                              self.width() - 2 * inset - 1, self._y(end) - self._y(start) - 1))
+
     def _paint_hover_title(self, p: QPainter) -> None:
+        self._paint_hover_outlines(p)
         titles, top = self._hover_titles()
         if not titles:
             return
         rect = QRect(TEXT_X, 0, self._track_x - 8 - TEXT_X, 0)
         flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap)
-        p.setFont(self._font)
-        text = "\n".join(titles)
-        needed = QFontMetrics(self._font).boundingRect(
-            QRect(0, 0, rect.width() - 6, 1000), flags, text).height()
-        rect.setHeight(needed + 6)
+        fm = QFontMetrics(self._font)
+        # Each entry: its times on a muted line of their own (where meetings overlap),
+        # then the title, wrapped. A small gap between entries.
+        entries = []
+        for times, title in titles:
+            height = fm.boundingRect(QRect(0, 0, rect.width() - 6, 1000), flags, title).height()
+            entries.append((times, title, height + (fm.lineSpacing() if times else 0)))
+        rect.setHeight(sum(h for *_, h in entries) + 3 * (len(entries) - 1) + 6)
         rect.moveTop(max(0, min(self.height() - rect.height(), top + 1)))
         p.setPen(QPen(theme.q("border"), 1))
         p.setBrush(theme.q("surface", 240))
         p.drawRoundedRect(QRectF(rect), 3, 3)
-        p.setPen(theme.q("text"))
-        p.drawText(rect.adjusted(3, 3, -3, -3), flags, text)
+        p.setFont(self._font)
+        y = rect.top() + 3
+        for times, title, height in entries:
+            line = QRect(rect.left() + 3, y, rect.width() - 6, height)
+            if times:
+                p.setPen(theme.q("muted"))
+                p.drawText(line, flags, times)
+                line.setTop(line.top() + fm.lineSpacing())
+            p.setPen(theme.q("text"))
+            p.drawText(line, flags, title)
+            y += height + 3
+
+    def _paint_target_mark(self, p: QPainter) -> None:
+        """A hollow node where the target is reached, when the end is elsewhere."""
+        mark = self.target_mark()
+        r0, r1 = self._range()
+        if mark is None or not r0 <= mark <= r1:
+            return
+        y = self._y(mark)
+        if not self._compact and all(abs(y - self._y(self.model.node_time(k))) >= 11
+                                     for k in range(self.model.node_count())):
+            p.setFont(self._font)
+            p.setPen(theme.q("faint"))
+            p.drawText(QRect(TEXT_X, y - 7, self._text_w, 14),
+                       int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                       to_hhmm(mark))
+        p.setPen(QPen(theme.q("node"), 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(self._track_x, y), NODE_R, NODE_R)
+
+    def _paint_lock(self, p: QPainter, y: int) -> None:
+        """A small padlock beside the end node while it is locked."""
+        x = self._track_x + 14   # clear of the now-line
+        p.setPen(QPen(theme.q("muted"), 1.2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawArc(QRectF(x + 1.5, y - 5, 4, 6), 0, 180 * 16)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(theme.q("muted"))
+        p.drawRect(QRectF(x, y - 2, 7, 5))
 
     def _paint_nodes(self, p: QPainter) -> None:
         dragged = self._drag["k"] if self._drag and self._drag["what"] == "node" else None
@@ -444,6 +599,8 @@ class DayTimeline(QWidget):
             p.setBrush(theme.q("node"))
             r = NODE_R + 1 if k == dragged else NODE_R
             p.drawEllipse(QPointF(self._track_x, y), r, r)
+        if self.end_locked() and self.can_lock_end() and not self._compact:
+            self._paint_lock(p, self._y(self.model.work_end))
 
     # ------------------------------------------------------------------
     # Hit testing
@@ -489,6 +646,9 @@ class DayTimeline(QWidget):
         if what == "code":
             self._open_code_menu(idx)
         elif what == "node":
+            if self._is_locked_end(idx):
+                QToolTip.showText(event.globalPosition().toPoint(), self._lock_tip(), self)
+                return
             self._drag = {"what": "node", "k": idx, "y0": event.position().y(), "moved": False}
         else:
             self._drag = {"what": "section", "i": idx, "y0": event.position().y(),
@@ -511,7 +671,7 @@ class DayTimeline(QWidget):
 
         if d["what"] == "node":
             meetings_only = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
-            t = self._snap_node_time(self._t(y), meetings_only)
+            t = self._snap_node_time(self._t(y), meetings_only, d["k"])
             self._user_edit(lambda: self.model.move_node(d["k"], t))
         else:
             delta = (y - d["y0"]) / self._ppm()
@@ -525,6 +685,8 @@ class DayTimeline(QWidget):
         if not d:
             return
         if d["moved"]:
+            if d["what"] == "node":
+                self._relock_if_on_mark(d["k"])
             self._commit()
         elif d["what"] == "node":
             self._open_editor(d["k"])
@@ -543,20 +705,34 @@ class DayTimeline(QWidget):
             return
         hit = self._hit(event.pos().x(), event.pos().y())
         i = hit[1] if hit and hit[0] in ("section", "code") else self._section_at(event.pos().y())
-        if i is None:
+        if i is None and not self.can_lock_end():
             return
-        s = self.model.sections[i]
-        t = snap(self._t(event.pos().y()), self.node_snap)
         menu = QMenu(self)
-        subtask_actions = self._add_subtask_menu(menu, s)
-        menu.addSeparator()
-        split = menu.addAction("Split here")
-        split.setEnabled(self.model.can_split(i, t))
-        menu.addSeparator()
-        delete = menu.addAction("Delete")
-        delete.setEnabled(self.model.can_delete(i))
+        menu.setToolTipsVisible(True)
+        subtask_actions, split, delete, lock = {}, None, None, None
+        if i is not None:
+            s = self.model.sections[i]
+            t = snap(self._t(event.pos().y()), self.node_snap)
+            subtask_actions = self._add_subtask_menu(menu, s)
+            menu.addSeparator()
+            split = menu.addAction("Split here")
+            split.setEnabled(self.model.can_split(i, t))
+            menu.addSeparator()
+            delete = menu.addAction("Delete")
+            delete.setEnabled(self.model.can_delete(i))
+        if self.can_lock_end():
+            menu.addSeparator()
+            lock = menu.addAction(f"Lock end of day to {fmt_duration(self.target())} mark")
+            lock.setCheckable(True)
+            lock.setChecked(self.end_locked())
+            lock.setToolTip("Locked, the end of day stays on the target mark and moves with "
+                            "lunch and breaks. Untick to drag it, e.g. to leave early.")
         chosen = menu.exec(event.globalPos())
-        if chosen in subtask_actions:
+        if chosen is None:
+            return
+        if chosen == lock:
+            self.set_end_locked(lock.isChecked())
+        elif chosen in subtask_actions:
             self._assign_subtask(s, subtask_actions[chosen])
         elif chosen == split:
             self._split(i, event.pos().y())
@@ -571,15 +747,30 @@ class DayTimeline(QWidget):
         elif hit[0] == "code":
             self.setCursor(Qt.CursorShape.PointingHandCursor)
         elif hit[0] == "node":
-            self.setCursor(Qt.CursorShape.SizeVerCursor)
+            self.setCursor(Qt.CursorShape.ArrowCursor if self._is_locked_end(hit[1])
+                           else Qt.CursorShape.SizeVerCursor)
         else:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
 
-    def _snap_node_time(self, raw: float, meetings_only: bool = False) -> int:
-        """Where a dragged node lands. A meeting edge within `meeting_snap` wins;
-        otherwise the nearer of the grid mark and, on today, the current time.
-        Holding Alt (meetings_only) jumps to the nearest meeting start or end however
-        far away, or the grid if the day has no meetings."""
+    def _is_locked_end(self, k: int) -> bool:
+        return self.end_locked() and self.can_lock_end() and k == self.model.work_end_node()
+
+    def _lock_tip(self) -> str:
+        return (f"End of day is locked to the {fmt_duration(self.target())} mark. "
+                "Once that has passed it follows the clock.\n"
+                "Right-click and untick the lock to move it.")
+
+    def _snap_node_time(self, raw: float, meetings_only: bool = False,
+                        k: Optional[int] = None) -> int:
+        """Where a dragged node lands. The end of day jumps to the target mark when
+        it comes within a snap step of it. Otherwise a meeting edge within
+        `meeting_snap` wins, then the nearer of the grid mark and, on today, the
+        current time. Holding Alt (meetings_only) jumps to the nearest meeting start
+        or end however far away, or the grid if the day has no meetings."""
+        if k is not None and k == self.model.work_end_node() and not meetings_only:
+            mark = self.model.target_end(self.target())
+            if abs(mark - raw) <= max(self.meeting_snap, self.node_snap):
+                return mark
         edges = [e for start, end, _ in self.meetings for e in (start, end)]
         if meetings_only and edges:
             return min(edges, key=lambda e: abs(e - raw))
@@ -714,6 +905,7 @@ class DayTimeline(QWidget):
             t = h * 60 + m
             if t != self.model.node_time(k):
                 self._user_edit(lambda: self.model.move_node(k, t))
+                self._relock_if_on_mark(k)
                 self._commit()
 
     # ------------------------------------------------------------------
@@ -741,7 +933,15 @@ class DayTimeline(QWidget):
 
     def _tooltip_at(self, x: int, y: int) -> str:
         """Times, project and subtask. Titles only on the inner half, and only when
-        compact or narrow; at full width they are drawn in place by _paint_hover_title."""
+        compact or narrow; at full width they are drawn in place by _paint_hover_title.
+        Over the end node or the target mark, what they are."""
+        if self._is_locked_end(self.model.work_end_node()) \
+                and abs(y - self._y(self.model.work_end)) <= NODE_HIT:
+            return self._lock_tip()
+        mark = self.target_mark()
+        if mark is not None and abs(y - self._y(mark)) <= NODE_HIT:
+            return (f"{fmt_duration(self.target())} mark: {to_hhmm(mark)}\n"
+                    "Drag the end of day here to lock it to the mark again")
         i = self._section_at(y)
         if i is None:
             return ""

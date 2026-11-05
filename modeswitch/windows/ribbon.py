@@ -6,6 +6,8 @@ RibbonWindow — the narrow always-on-top strip down the left or right edge of a
   • time per project
   • Review button
 The minimise button collapses it to just the slider; clicking the slider expands it.
+The button reaches right up into the top corner, and the outermost column of pixels
+down the screen edge toggles it too, so it can be hit by throwing the mouse there.
 
 It registers as a Windows app bar, so it reserves its strip of the screen and other
 windows snap to it rather than sliding underneath. Drag the header to move it to
@@ -93,6 +95,10 @@ class RibbonWindow(QWidget):
         self._drop_preview = QRubberBand(QRubberBand.Shape.Rectangle)
 
         self._build_ui()
+        # Clicks on the outermost pixel column are caught on the native window, before
+        # Qt picks a widget: it never hands clicks to a widget only 1px wide
+        self.winId()
+        self.windowHandle().installEventFilter(self)
         QApplication.instance().screenAdded.connect(self._on_screens_changed)
         QApplication.instance().screenRemoved.connect(self._on_screens_changed)
         self.set_collapsed(models.get_setting("ribbon_collapsed", "0") == "1")
@@ -226,6 +232,26 @@ class RibbonWindow(QWidget):
             self._appbar.remove()
         self._docked_on = None
 
+    def _on_screen_edge(self, x: float) -> bool:
+        """Whether a window x is in the single pixel column at the screen edge."""
+        return x < 1 if self.dock_edge() == "left" else x >= self.width() - 1
+
+    def _corner_rect(self) -> QRect:
+        """The minimise button stretched up and out to the ribbon's top corner, so a
+        click anywhere in the margin around it still counts."""
+        top_left = self._collapse_btn.mapTo(self, QPoint(0, 0))
+        return QRect(QPoint(top_left.x(), 0),
+                     QPoint(self.width() - 1, top_left.y() + self._collapse_btn.height() - 1))
+
+    def mousePressEvent(self, event):
+        # Only the margins above and below the header and timeline land here
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._collapsed:
+            self.set_collapsed(False)
+        elif self._corner_rect().contains(event.position().toPoint()):
+            self.set_collapsed(True)
+
     def showEvent(self, event):
         super().showEvent(event)
         QTimer.singleShot(0, self.place)
@@ -263,10 +289,20 @@ class RibbonWindow(QWidget):
         return screen, edge
 
     def eventFilter(self, obj, event):
+        if obj is self.windowHandle():
+            if (event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick)
+                    and event.button() == Qt.MouseButton.LeftButton
+                    and self._on_screen_edge(event.position().x())):
+                self.set_collapsed(not self._collapsed)
+                return True
+            return False
         if obj is not self._header:
             return super().eventFilter(obj, event)
         kind = event.type()
         if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            if self._corner_rect().contains(self._header.mapTo(self, event.position().toPoint())):
+                self.set_collapsed(True)   # the margin beside the minimise button
+                return True
             self._drag_start = event.globalPosition().toPoint()
             self._drag_offset = self._drag_start - self.pos()
             return True

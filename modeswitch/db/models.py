@@ -41,7 +41,7 @@ class Day:
     in_time: Optional[str]   # HH:MM — start of work (after any commute)
     out_time: Optional[str]  # HH:MM — end of work (before any commute)
     in_source: str           # manual | detected
-    out_source: str          # computed | manual (follows the clock once passed) | held | detected
+    out_source: str          # computed (locked to the target mark) | manual (follows the clock once passed) | held | detected
     wfh: bool
     last_seen: Optional[str]  # HH:MM — last heartbeat while the app was running
     is_holiday: bool
@@ -157,7 +157,8 @@ def create_project(code: str, name: str, color: str) -> Project:
 
 
 def update_project(project_id: int, *, code: str = None, name: str = None,
-                   color: str = None, last_used: str = None) -> None:
+                   color: str = None, last_used: str = None,
+                   counts_as_work: bool = None) -> None:
     fields, values = [], []
     if code is not None:
         fields.append("code = ?"); values.append(code.upper())
@@ -167,6 +168,8 @@ def update_project(project_id: int, *, code: str = None, name: str = None,
         fields.append("color = ?"); values.append(color)
     if last_used is not None:
         fields.append("last_used = ?"); values.append(last_used)
+    if counts_as_work is not None:
+        fields.append("counts_as_work = ?"); values.append(int(counts_as_work))
     if not fields:
         return
     values.append(project_id)
@@ -270,6 +273,20 @@ def get_first_logged_date() -> Optional[str]:
                WHERE EXISTS (SELECT 1 FROM time_blocks b WHERE b.day_id = d.id)"""
         ).fetchone()
     return row["first"] if row else None
+
+
+def get_work_blocks_before(before_date: str) -> list[tuple[str, Optional[int], str, str]]:
+    """(date, project_id, start, end) for every work section on days before that date,
+    leaving out holidays."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT d.date, b.project_id, b.start_time, b.end_time
+               FROM time_blocks b JOIN days d ON d.id = b.day_id
+               WHERE d.date < ? AND d.is_holiday = 0 AND b.kind = 'work'
+               ORDER BY d.date""",
+            (before_date,),
+        ).fetchall()
+    return [(r["date"], r["project_id"], r["start_time"], r["end_time"]) for r in rows]
 
 
 def get_unfinished_days(before_date: str) -> list[Day]:

@@ -9,6 +9,8 @@ Two modes:
   • "total"  — time on one thing (a project, lunch, commute). The headline is the
                total and the average per counted day; points use the thing's colour.
 
+Either mode can be drawn as a dashed line with points, or as bars from zero.
+
 Holidays and days with nothing logged are shown on the axis but not counted.
 """
 from __future__ import annotations
@@ -29,6 +31,22 @@ AXIS_W = 30
 FOOT_H = 18
 POINT_R = 3.5
 X_INSET = 26        # room either side for the first and last day labels
+BAR_MAX_W = 22
+BAR_RADIUS = 4
+
+
+def bar_path(rect: QRectF, radius: float = BAR_RADIUS) -> QPainterPath:
+    """A bar with its top corners rounded and its foot square on the baseline."""
+    r = min(radius, rect.width() / 2, rect.height())
+    path = QPainterPath()
+    path.moveTo(rect.bottomLeft())
+    path.lineTo(rect.left(), rect.top() + r)
+    path.quadTo(rect.topLeft(), QPointF(rect.left() + r, rect.top()))
+    path.lineTo(rect.right() - r, rect.top())
+    path.quadTo(rect.topRight(), QPointF(rect.right(), rect.top() + r))
+    path.lineTo(rect.bottomRight())
+    path.closeSubpath()
+    return path
 
 
 @dataclass
@@ -44,6 +62,7 @@ class CreditChart(QWidget):
         super().__init__(parent)
         self._days: list[ChartDay] = []
         self._mode = "credit"
+        self._style = "line"
         self._color: Optional[str] = None
         self._label = ""
         self._font = QFont("Segoe UI", 8)
@@ -57,6 +76,11 @@ class CreditChart(QWidget):
         self._mode = mode
         self._color = color
         self._label = label
+        self.update()
+
+    def set_style(self, style: str) -> None:
+        """'line' (dashed line and points) or 'bar'."""
+        self._style = style if style == "bar" else "line"
         self.update()
 
     def _counted(self) -> list[ChartDay]:
@@ -77,7 +101,7 @@ class CreditChart(QWidget):
     def _hour_range(self) -> tuple[int, int]:
         values = [d.value / 60 for d in self._counted()]
         values += [d.target / 60 for d in self._days if d.target is not None]
-        if self._mode == "credit":
+        if self._mode == "credit" and self._style == "line":
             targets = [d.target / 60 for d in self._days if d.target is not None] or [8]
             values += [min(targets) - 1, max(targets) + 1]
             return int(min(values)) - (1 if min(values) % 1 == 0 else 0), int(max(values)) + 1
@@ -107,8 +131,12 @@ class CreditChart(QWidget):
             p.end()
             return
         self._paint_grid(p)
-        self._paint_nominal(p)
-        self._paint_values(p)
+        if self._style == "bar":
+            self._paint_bars(p)
+            self._paint_nominal(p)   # over the bars, so it reads as the bar to reach
+        else:
+            self._paint_nominal(p)
+            self._paint_values(p)
         self._paint_days(p)
         p.end()
 
@@ -194,6 +222,24 @@ class CreditChart(QWidget):
             else:
                 p.setBrush(color)
             p.drawEllipse(QPointF(self._x(i), self._y(d.value)), POINT_R, POINT_R)
+
+    def _paint_bars(self, p: QPainter) -> None:
+        r = self._plot_rect()
+        n = len(self._days)
+        slot = (r.width() - 2 * X_INSET) / max(1, n - 1) if n > 1 else r.width()
+        width = max(3.0, min(BAR_MAX_W, slot * 0.6))
+        base = self._y(0)
+        color = self._series_color()
+        p.setPen(Qt.PenStyle.NoPen)
+        for i, d in enumerate(self._days):
+            if not d.value:
+                continue
+            if self._mode == "credit":
+                p.setBrush(theme.q("credit") if d.value >= (d.target or 0) else theme.q("debit"))
+            else:
+                p.setBrush(color)
+            top = self._y(d.value)
+            p.drawPath(bar_path(QRectF(self._x(i) - width / 2, top, width, base - top)))
 
     def _paint_days(self, p: QPainter) -> None:
         r = self._plot_rect()

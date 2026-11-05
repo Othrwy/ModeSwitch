@@ -54,8 +54,9 @@ def build_default_day(start: int, wfh: bool, lunch_mins: int = 60,
 
 
 class DayModel:
-    def __init__(self, sections: list[Section]):
+    def __init__(self, sections: list[Section], off_projects: frozenset[int] = frozenset()):
         self.sections = sections
+        self.off_projects = off_projects   # projects that do not count as work (Break)
 
     # ------------------------------------------------------------------
     # Lookups
@@ -92,8 +93,23 @@ class DayModel:
     def lunch_minutes(self) -> int:
         return sum(s.duration for s in self.sections if s.kind == LUNCH)
 
+    def _is_off(self, s: Section) -> bool:
+        return s.kind == LUNCH or (s.kind == WORK and s.project_id in self.off_projects)
+
+    def off_minutes(self) -> int:
+        """Lunch, plus time on projects that do not count as work (a Break project)."""
+        return sum(s.duration for s in self.sections if self._is_off(s))
+
     def worked_minutes(self) -> int:
-        return self.work_end - self.work_start - self.lunch_minutes()
+        return self.work_end - self.work_start - self.off_minutes()
+
+    def target_end(self, target_mins: int) -> int:
+        """When `target_mins` of work will have been done: start + target + time off.
+        The last section is left out, since its length is what the end decides."""
+        last = self.work_end_node() - 1
+        off = sum(s.duration for i, s in enumerate(self.sections)
+                  if i != last and self._is_off(s))
+        return self.work_start + target_mins + off
 
     def credit(self, target_mins: int) -> int:
         return self.worked_minutes() - target_mins
@@ -180,10 +196,10 @@ class DayModel:
             self.sections[i + 1].start = s.end
 
     def apply_computed_end(self, target_mins: int) -> None:
-        """End of work = start + target + lunch, for days with no real end time yet."""
+        """End of work = start + target + time off, for days with no real end time yet."""
         if self.sections[self.work_end_node() - 1].kind != WORK:
             return
-        self.set_work_end(self.work_start + target_mins + self.lunch_minutes())
+        self.set_work_end(self.target_end(target_mins))
 
     # ------------------------------------------------------------------
     # Split and delete

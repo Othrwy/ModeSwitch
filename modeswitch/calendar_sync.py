@@ -1,11 +1,14 @@
 """
-Reading Patrick's Outlook calendar. Two sources:
+Reading the user's Outlook calendar. Two sources:
 
   • Classic Outlook, through COM (the default). The new Outlook app has no COM
     interface, but classic Outlook is installed alongside it with a working profile,
     and reading through it needs no app registration or admin approval.
   • Microsoft Graph (/me/calendarView), used instead once signed in. The company
     tenant needs IT to grant admin consent first, so this is dormant for now.
+
+Also the checks the Connect to Outlook page runs: is classic Outlook installed, which
+mail profiles exist, and a test read of today's meetings.
 
 No Qt and no database writes in here: fetch_meetings() runs on a background thread
 and returns meetings per day for the main thread to store.
@@ -92,20 +95,82 @@ def _naive(t) -> datetime:
     return datetime(t.year, t.month, t.day, t.hour, t.minute)
 
 
+OFFICE_KEY = r"Software\Microsoft\Office\16.0\Outlook"   # Office 2016 onwards, and 365
+
+
+def classic_outlook_path() -> Optional[str]:
+    """Where OUTLOOK.EXE (classic Outlook) is installed, or None."""
+    import winreg
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion"
+                                      r"\App Paths\OUTLOOK.EXE") as key:
+                path = winreg.QueryValue(key, None)
+                if path and Path(path.strip('"')).exists():
+                    return path.strip('"')
+        except OSError:
+            continue
+    return None
+
+
+def outlook_profiles() -> tuple[list[str], Optional[str]]:
+    """(mail profile names, the default one). Empty until classic Outlook has been
+    opened and signed in once."""
+    import winreg
+    names, default = [], None
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, OFFICE_KEY + r"\Profiles") as key:
+            i = 0
+            while True:
+                try:
+                    names.append(winreg.EnumKey(key, i))
+                except OSError:
+                    break
+                i += 1
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, OFFICE_KEY) as key:
+            default = winreg.QueryValueEx(key, "DefaultProfile")[0]
+    except OSError:
+        pass
+    return names, default if default in names else (names[0] if names else None)
+
+
+def explain_error(e: Exception) -> str:
+    """A COM error from Outlook, in words someone can act on."""
+    text = str(e)
+    if "Invalid class string" in text:
+        return "Classic Outlook is not installed, so there is nothing to read the calendar through."
+    if "Server execution failed" in text or "-2146959355" in text:
+        return ("Windows could not start classic Outlook in the background. Open "
+                "Outlook (classic) once from the Start menu, let it finish loading, close it, "
+                "and try again.")
+    if "-2147221233" in text or "profile" in text.lower():
+        return "Outlook could not open that mail profile. Pick another profile above."
+    return text
+
+
 class OutlookReader:
     """Holds classic Outlook open between syncs so its local copy keeps syncing.
-    Use it from one thread only, the one that created it."""
+    Use it from one thread only, the one that created it.
 
-    def __init__(self):
+    `profile` is the mail profile to log on with; empty means the default one."""
+
+    def __init__(self, profile: str = ""):
         import pythoncom
         pythoncom.CoInitialize()
         self._ns = None
+        self.profile = profile
+
+    def use_profile(self, profile: str) -> None:
+        if profile != self.profile:
+            self.profile = profile
+            self._ns = None
 
     def _namespace(self):
         if self._ns is None:
             import win32com.client
             ns = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-            ns.Logon("Outlook", "", False, False)   # default profile, no dialog
+            # No dialog. Ignored if Outlook is already running with a profile.
+            ns.Logon(self.profile or outlook_profiles()[1] or "", "", False, False)
             self._ns = ns
         return self._ns
 
@@ -259,6 +324,14 @@ def fetch_meetings(first: date, last: date,
     if is_signed_in():
         return "Microsoft Graph", _split_by_day(graph_events(first, last), first, last)
     return "Outlook", _split_by_day(outlook.events(first, last), first, last)
+
+
+def test_outlook(profile: str = "") -> int:
+    """Read today's meetings through classic Outlook on a fresh connection; returns how
+    many there are. Run it on its own thread: it opens its own COM link."""
+    today = date.today()
+    return len(_split_by_day(OutlookReader(profile).events(today, today),
+                             today, today)[today.isoformat()])
 
 
 if __name__ == "__main__":

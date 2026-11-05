@@ -8,28 +8,17 @@ import sys
 import threading
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
-from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QMessageBox
 )
 
-from modeswitch import calendar_sync, days, theme
+from modeswitch import autostart, calendar_sync, days, theme
+from modeswitch.app_icon import app_icon
+from modeswitch.db import models
 from modeswitch.db.schema import init_db
 from modeswitch.timeutil import now_min, to_hhmm
 from modeswitch.windows.ribbon import RibbonWindow
-
-
-def _make_default_icon() -> QIcon:
-    """Create a simple coloured square icon for the tray."""
-    px = QPixmap(16, 16)
-    px.fill(Qt.GlobalColor.transparent)
-    p = QPainter(px)
-    p.setBrush(QColor("#4CAF50"))
-    p.setPen(Qt.PenStyle.NoPen)
-    p.drawRoundedRect(1, 1, 14, 14, 3, 3)
-    p.end()
-    return QIcon(px)
 
 
 SYNC_INTERVAL_MS = 5 * 60_000
@@ -63,18 +52,20 @@ class CalendarSyncer(QObject):
         if self._busy:
             return
         self._busy = True
-        self._jobs.put(user_started)
+        self._jobs.put((user_started, models.get_setting("outlook_profile", "")))
 
     def _worker(self) -> None:
         outlook = calendar_sync.OutlookReader()
         while True:
-            user_started = self._jobs.get()
+            user_started, profile = self._jobs.get()
             try:
+                outlook.use_profile(profile)
                 first, last = calendar_sync.sync_range()
                 source, by_date = calendar_sync.fetch_meetings(first, last, outlook)
                 self._fetched.emit(source, by_date, user_started)
             except Exception as e:
-                self._failed.emit(f"Calendar sync failed: {e}", user_started)
+                self._failed.emit(f"Calendar sync failed: {calendar_sync.explain_error(e)}",
+                                  user_started)
 
     def _on_fetched(self, source: str, by_date, user_started: bool) -> None:
         self._busy = False
@@ -98,10 +89,16 @@ class App:
         self.qapp = QApplication.instance() or QApplication(sys.argv)
         self.qapp.setQuitOnLastWindowClosed(False)
         self.qapp.setApplicationName("ModeSwitch")
+        self.qapp.setWindowIcon(app_icon())
 
         init_db()
+        autostart.migrate_shortcut()
         theme.apply(self.qapp)
         theme.hub().settings_changed.connect(self._on_settings_changed)
+        # A brand-new user (nothing logged yet) gets the guide once, on first launch
+        show_guide = (models.get_setting("guide_seen", "") != "1"
+                      and not models.get_first_logged_date())
+        models.set_setting("guide_seen", "1")
 
         self.ribbon = RibbonWindow()
         self.ribbon.show()
@@ -113,10 +110,13 @@ class App:
         self.calendar = CalendarSyncer(self.qapp)
         self.calendar.synced.connect(self.ribbon.on_meetings_synced)
         self.calendar.status_changed.connect(self._on_calendar_status)
+        theme.hub().sync_requested.connect(lambda: self.calendar.sync(user_started=True))
+        if show_guide:
+            QTimer.singleShot(1500, self._show_guide)
 
     # ------------------------------------------------------------------
     def _build_tray(self) -> QSystemTrayIcon:
-        icon = _make_default_icon()
+        icon = app_icon()
         tray = QSystemTrayIcon(icon, self.qapp)
         tray.setToolTip("ModeSwitch")
 
@@ -137,6 +137,9 @@ class App:
 
         settings_action = menu.addAction("Settings")
         settings_action.triggered.connect(self._open_settings)
+
+        guide_action = menu.addAction("Getting started")
+        guide_action.triggered.connect(self._show_guide)
 
         menu.addSeparator()
 
@@ -176,6 +179,10 @@ class App:
     def _open_settings(self) -> None:
         from modeswitch.windows.settings_dialog import SettingsDialog
         SettingsDialog(self.ribbon).exec()   # announces its own changes on the hub
+
+    def _show_guide(self) -> None:
+        from modeswitch.dialogs.guide import GuideDialog
+        GuideDialog(self.ribbon).exec()
 
     def _on_settings_changed(self) -> None:
         theme.apply(self.qapp)

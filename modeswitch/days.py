@@ -48,6 +48,11 @@ def kind_colors() -> dict[str, str]:
             for kind, default in DEFAULT_KIND_COLORS.items()}
 
 
+def off_projects() -> frozenset[int]:
+    """Projects whose time does not count as work, such as a Break project."""
+    return frozenset(p.id for p in models.get_all_projects() if not p.counts_as_work)
+
+
 def load_model(day: Day) -> DayModel:
     blocks = models.get_blocks_for_day(day.id)
     return DayModel([
@@ -55,7 +60,7 @@ def load_model(day: Day) -> DayModel:
                 project_id=b.project_id, subtask_id=b.subtask_id,
                 title=b.title, title_manual=b.title_manual)
         for b in blocks
-    ])
+    ], off_projects())
 
 
 def load_meetings(date_str: str) -> list[tuple[int, int, str]]:

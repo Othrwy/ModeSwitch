@@ -194,6 +194,7 @@ class _Hub(QObject):
     """Settings or the theme changed; windows refresh themselves."""
     settings_changed = pyqtSignal()
     projects_changed = pyqtSignal()   # a project or subtask was added outside the review panel
+    sync_requested = pyqtSignal()     # sync the calendar now (from the Connect to Outlook page)
 
 
 _hub: Optional[_Hub] = None
