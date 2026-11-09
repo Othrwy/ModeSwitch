@@ -81,6 +81,12 @@ class AppBar:
     def register(self) -> bool:
         if not self.registered:
             self.registered = bool(_shell32.SHAppBarMessage(ABM_NEW, ctypes.byref(self._data())))
+        if not self.registered:
+            # ABM_NEW also fails when the shell still has this window, as after a
+            # TaskbarCreated broadcast at login that did not actually forget it.
+            # Left alone, its old width would stay reserved for good, so start afresh.
+            _shell32.SHAppBarMessage(ABM_REMOVE, ctypes.byref(self._data()))
+            self.registered = bool(_shell32.SHAppBarMessage(ABM_NEW, ctypes.byref(self._data())))
         return self.registered
 
     def remove(self) -> None:
