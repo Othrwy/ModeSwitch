@@ -102,7 +102,7 @@ Layout sketch (not to scale):
   - The overlap reads as a deeper band. Days without overlaps look the same as before.
   - A faint hairline marks each overlapping meeting's start and end, which would otherwise be lost inside the deeper band.
   - On the ribbon, the coloured strips down the meetings' left sides sit side by side in lanes (like a calendar's columns), showing how many there are and how far each runs.
-  - Hovering picks meetings by the time under the mouse, not by which is drawn on top, so every meeting there is listed, earliest first. Where they overlap, each title gets its times on a muted line above it, and each hovered meeting is outlined, nested a step in per lane, so its full extent shows.
+  - Hovering picks meetings by the time under the mouse, not by which is drawn on top, so every meeting there is listed, earliest first. Each title has its start time on a muted line above it **[decided]**; where they overlap, that line gives the start and end, and each hovered meeting is outlined, nested a step in per lane, so its full extent shows.
 - **T16 [assumed]** If a section is too short for the code box and the subtask name, the name is dropped and shown on hover. Below about 12px the code box is dropped too.
 - **T16b [decided]** Today's timeline runs half an hour past the end of the day or the current time, whichever is later, so there is room to drag the end node down. **[assumed]** Past days in the review panel have no extra room; they share one time scale (V6).
 - **T16a [decided]** A **white** tick on the slider marks the current time. **[assumed]** In the light theme it is near-black, so it stays visible; in a custom theme it is the "Current time line" colour.
@@ -270,6 +270,7 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 
 | Date | Decision |
 |---|---|
+| 2026-11-10 | Hovering a meeting always shows its start time above the title, not only where meetings overlap (T15b). |
 | 2026-11-05 | Overlapping meetings stack their translucency, with hairlines at their edges and side-by-side strips; hovering lists every meeting under the mouse with its times and outlines each, so none hides another (T15b). For sharing with colleagues: a Connect to Outlook setup page in Settings (O3e), a Getting started guide (V10) and a README with install steps. |
 | 2026-11-05 | Minimise works from the top corner of the screen, and clicking the outermost pixel column of the screen edge minimises too (R7b). The tracker can show bars instead of a line (V9c), and has an All projects view as stacked bars or pies by week, fortnight, month or all time as an average day (V9d). |
 | 2026-11-03 | Tray icon is two green triangles whose gap makes an S, from Patrick's picture. It replaced a first attempt drawn as a miniature timeline (section 2). |

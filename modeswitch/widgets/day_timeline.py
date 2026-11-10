@@ -487,12 +487,13 @@ class DayTimeline(QWidget):
 
     def _hover_titles(self) -> tuple[list[tuple[str, str]], int]:
         """(times, title) under the mouse, and the y to draw them from. Only on the
-        inner half. Times are only given where meetings overlap, to tell them apart."""
+        inner half. A meeting's start time is always given; where meetings overlap,
+        its end too, to tell them apart."""
         hits = self._hover_meetings()
         if hits:
             _, overlaps = meeting_lanes(self.meetings)
             timed = any(overlaps[i] for i in hits)
-            titles = [(f"{to_hhmm(start)}–{to_hhmm(end)}" if timed else "", title)
+            titles = [(f"{to_hhmm(start)}–{to_hhmm(end)}" if timed else to_hhmm(start), title)
                       for start, end, title in (self.meetings[i] for i in hits)]
             return titles, self._y(self.meetings[hits[0]][0])
         if (self._hover is None or not self.model or self._drag or self._compact or self._narrow
