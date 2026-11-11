@@ -1,0 +1,4 @@
+PyQt6>=6.6.0
+pywin32>=306
+pyinstaller>=6.0
+msal>=1.28
