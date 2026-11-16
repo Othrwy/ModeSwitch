@@ -1,6 +1,6 @@
 # ModeSwitch — Specification
 
-**Status:** v2 ribbon, timeline and review panel built (2026-10-13). Minimise, per-day project totals in review, and autostart added (2026-10-20). Ribbon reserves its screen space and can be dragged to any monitor edge (2026-10-21). Outlook sync working through classic Outlook (2026-10-22); Microsoft Graph route built but waiting on IT admin consent. Themes, fuller Settings and a multi-purpose tracker chart added (2026-10-27). End of day locked to the 8h mark, with a hollow node marking the mark, and Break projects that count like lunch (2026-11-02). Autostart on wake and unlock (2026-11-03). Minimise from the screen corner and edge; tracker bar view and all-projects view; overlapping meetings, Connect to Outlook page and Getting started guide (2026-11-05). Last updated 2026-11-05.
+**Status:** v2 ribbon, timeline and review panel built (2026-10-13). Minimise, per-day project totals in review, and autostart added (2026-10-20). Ribbon reserves its screen space and can be dragged to any monitor edge (2026-10-21). Outlook sync working through classic Outlook (2026-10-22); Microsoft Graph route built but waiting on IT admin consent. Themes, fuller Settings and a multi-purpose tracker chart added (2026-10-27). End of day locked to the 8h mark, with a hollow node marking the mark, and Break projects that count like lunch (2026-11-02). Autostart on wake and unlock (2026-11-03). Minimise from the screen corner and edge; tracker bar view and all-projects view; overlapping meetings, Connect to Outlook page and Getting started guide (2026-11-05). Paid toggle per project, and holidays counted in the All projects totals (2026-11-16). Last updated 2026-11-16.
 
 This file is the source of truth for what ModeSwitch is meant to do. Read it before changing the code. When a decision is made or a preference stated, record it here (section 11) in the same change as the code.
 
@@ -187,6 +187,7 @@ How on/off times are detected **[assumed]**:
 - **P7b [decided]** Each project row in the summary starts with a small ✦ in the project's colour: `✦ 0000 | 2h 35m`. **[assumed]** Unassigned time gets the theme's unassigned-track colour.
 - **P8 [assumed]** The summary excludes lunch and commute. Break projects (P10) are still listed, like any project.
 - **P10 [decided]** A project can be marked as not counting as work, such as Patrick's "Break" project (`OUT`). Its sections behave like lunch: they are taken off time worked (D6) and push the 8h mark later (D2). Unlike lunch, they are put in wherever needed by assigning the project to a section. **[assumed]** Marked with the **Work** tick box in the review panel's project table (V7), stored in the projects table's existing `counts_as_work` column. If a break is the last section of the day, it does not push the mark later, since the end decides its length.
+- **P11 [decided]** Each project has a **Paid** toggle saying whether its time is paid work. Unpaid projects, such as Break (`OUT`), are left out of the All projects totals (V9d). **[assumed]** It is a tick box beside Work in the project table (V7), stored in a new `is_paid` column on projects. It is separate from Work, which only decides whether time counts toward the working day (P10). Existing projects started paid if they counted as work, so `OUT` started unpaid; new projects start paid.
 - **P9 [open Q4]** v1 has built-in projects with non-numeric codes (`LNCH`, `COMM`, `OW`). Lunch and commute become section types in v2; what happens to `OW` (Other Way) is undecided.
 
 ## 8. Review panel
@@ -208,7 +209,7 @@ How on/off times are detected **[assumed]**:
 - **V6b [decided]** Beneath each day's slider, the total time per project for that day, in the same `✦ 0000 | 2h 35m` form, with subtask rows, as the ribbon summary (P7).
 - **V6c [assumed]** Every column reserves room for as many summary rows as the longest day, so the timelines stay level on the shared time scale.
 - **V6a [decided]** "Earlier" adds every older week back to the first day with anything logged, all at once, in a sideways-scrolling strip. It is greyed out when there is nothing older to show. The panel never grows wider than its default width (wide enough for the default four weeks); extra weeks scroll. **[assumed]** A day with nothing logged shows "Add day", which creates it starting at 08:30.
-- **V7 [assumed]** The project table covers code, name, **Work** (ticked if the project counts as work, unticked for a break, P10) and colour. It replaces the v1 Edit Modes dialog and the projects part of Settings.
+- **V7 [assumed]** The project table covers code, name, **Work** (ticked if the project counts as work, unticked for a break, P10), **Paid** (P11) and colour. It replaces the v1 Edit Modes dialog and the projects part of Settings.
 - **V7a [decided]** Lunch and Commute are listed at the top of the project table so their colours can be changed. They cannot be deleted or renamed. **[assumed]** Their colours are stored as the `lunch_color` and `commute_color` settings.
 - **V7b [decided]** Each project in the table has a small ⤷ arrow that expands the table to show that project's subtasks underneath it. **[assumed]** The arrow is faint when the project has no subtasks yet. Expanded, each subtask can be renamed in place or deleted (✕), and a "+ Add subtask" row adds one. Which projects are expanded is not remembered between sessions.
 - **V9a [decided]** Beside the project table, in place of the old title rules table, is a credit chart. A solid line shows the nominal day (8h, Mon–Thu), and a dashed line plots the hours actually worked each day, so Patrick can see whether he needs to make time up. **[assumed]**
@@ -223,7 +224,8 @@ How on/off times are detected **[assumed]**:
   - The choice is remembered (`chart_series` setting).
 - **V9c [decided]** The chart can switch between a line and a bar chart. **[assumed]** A second dropdown beside Track picks Line or Bars. Bars start from zero and are credit- or debit-coloured (Credit) or in the thing's colour; the nominal line is drawn over them. Remembered (`chart_style`).
 - **V9d [decided]** Track has an **All projects** view: every project together, as stacked bars or pies, summarised by week, fortnight, month or all time (an average day). **[assumed]**
-  - It covers every logged day before today, not just the columns shown, leaving out holidays. Lunch and commute are left out; Break projects and unassigned time are included, like the summary (P8).
+  - It covers every logged day before today, not just the columns shown. Lunch and commute are left out, and so are unpaid projects such as Break (P11). Unassigned time is included.
+  - **[decided]** Holiday time is included in the totals, so a week with a holiday is not counted short. **[assumed]** A holiday on a working day counts as that day's working length (D5a), shown as a gold **Holiday** segment or slice, and counts as a day for the all-time average. Holidays on non-working days are not counted. The note top right says how many days were holidays.
   - Week, fortnight and month show each period's total; all time shows an average day (total ÷ days logged). The newest fortnight is this week and last week.
   - Bars: one stack per period, the biggest project overall at the foot. Pies: one per period, as many of the newest as fit. Empty periods between logged ones show as gaps.
   - A legend on the right lists the projects; hovering a segment or slice gives its time, share and average a day.
@@ -270,6 +272,7 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 
 | Date | Decision |
 |---|---|
+| 2026-11-16 | Each project has a Paid toggle; unpaid projects such as Break are left out of the All projects totals (P11, V9d). Holidays count toward those totals as a full working day, so the weekly average is not dragged down by time off (V9d). |
 | 2026-11-10 | Hovering a meeting always shows its start time above the title, not only where meetings overlap (T15b). |
 | 2026-11-05 | Overlapping meetings stack their translucency, with hairlines at their edges and side-by-side strips; hovering lists every meeting under the mouse with its times and outlines each, so none hides another (T15b). For sharing with colleagues: a Connect to Outlook setup page in Settings (O3e), a Getting started guide (V10) and a README with install steps. |
 | 2026-11-05 | Minimise works from the top corner of the screen, and clicking the outermost pixel column of the screen edge minimises too (R7b). The tracker can show bars instead of a line (V9c), and has an All projects view as stacked bars or pies by week, fortnight, month or all time as an average day (V9d). |
@@ -356,6 +359,7 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 ### 12.2 Data model
 
 - Database: `%LOCALAPPDATA%\ModeSwitch\modeswitch.db`. Set the `MODESWITCH_DB` environment variable to point the app at a different file for testing.
+- `projects`: `code`, `name`, `color`, `last_used`, `counts_as_work` (P10), `is_paid` (P11).
 - `days`: date, `in_time` / `out_time` (start and end of work, excluding commute), `in_source` (manual / detected), `out_source` (manual / detected / computed), `wfh`, `last_seen`, `is_holiday`.
 - `time_blocks`: one row per section — `kind` (work / lunch / commute), start, end, nullable `project_id`, nullable `subtask_id`, `title`, `title_manual`. The old `category` column (A–D) is left in place but no longer used; `title_manual` is only set on titles typed before Set title was removed. A day's rows are replaced as a set on every save.
 - `meetings`: cached calendar events per day.

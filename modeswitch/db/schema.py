@@ -107,6 +107,7 @@ def init_db() -> None:
             );
         """)
         _add_subtask_columns(conn)
+        _add_paid_column(conn)
         _seed_settings(conn)
         _seed_builtin_projects(conn)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -133,6 +134,15 @@ def _add_subtask_columns(conn: sqlite3.Connection) -> None:
                 (project_id, letter)).fetchone()[0]
             conn.execute(f"UPDATE {table} SET subtask_id = ? WHERE project_id = ? AND category = ?",
                          (subtask_id, project_id, letter))
+
+
+def _add_paid_column(conn: sqlite3.Connection) -> None:
+    """Whether a project's time counts in the project totals as paid work. Projects
+    that already existed start paid if they count as work, so Break is unpaid."""
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(projects)")}
+    if "is_paid" not in columns:
+        conn.execute("ALTER TABLE projects ADD COLUMN is_paid INTEGER NOT NULL DEFAULT 1")
+        conn.execute("UPDATE projects SET is_paid = counts_as_work")
 
 
 def _seed_settings(conn: sqlite3.Connection) -> None:

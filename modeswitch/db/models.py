@@ -25,6 +25,7 @@ class Project:
     sort_order: int
     is_builtin: bool
     counts_as_work: bool
+    is_paid: bool = True
 
 
 @dataclass
@@ -121,6 +122,7 @@ def _row_to_project(row: sqlite3.Row) -> Project:
         sort_order=row["sort_order"],
         is_builtin=bool(row["is_builtin"]),
         counts_as_work=bool(row["counts_as_work"]),
+        is_paid=bool(row["is_paid"]),
     )
 
 
@@ -158,7 +160,7 @@ def create_project(code: str, name: str, color: str) -> Project:
 
 def update_project(project_id: int, *, code: str = None, name: str = None,
                    color: str = None, last_used: str = None,
-                   counts_as_work: bool = None) -> None:
+                   counts_as_work: bool = None, is_paid: bool = None) -> None:
     fields, values = [], []
     if code is not None:
         fields.append("code = ?"); values.append(code.upper())
@@ -170,6 +172,8 @@ def update_project(project_id: int, *, code: str = None, name: str = None,
         fields.append("last_used = ?"); values.append(last_used)
     if counts_as_work is not None:
         fields.append("counts_as_work = ?"); values.append(int(counts_as_work))
+    if is_paid is not None:
+        fields.append("is_paid = ?"); values.append(int(is_paid))
     if not fields:
         return
     values.append(project_id)
@@ -287,6 +291,16 @@ def get_work_blocks_before(before_date: str) -> list[tuple[str, Optional[int], s
             (before_date,),
         ).fetchall()
     return [(r["date"], r["project_id"], r["start_time"], r["end_time"]) for r in rows]
+
+
+def get_holidays_before(before_date: str) -> list[str]:
+    """Dates marked as a holiday before that date."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT date FROM days WHERE date < ? AND is_holiday = 1 ORDER BY date",
+            (before_date,),
+        ).fetchall()
+    return [r["date"] for r in rows]
 
 
 def get_unfinished_days(before_date: str) -> list[Day]:
