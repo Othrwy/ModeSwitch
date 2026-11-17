@@ -18,7 +18,7 @@ ModeSwitch logs which project your attention is on through the working day, so y
 You need Windows 10 or 11, [Python 3.11](https://www.python.org/downloads/) and Git. For the calendar you also need classic Outlook (it comes with Microsoft 365 Apps), signed in once.
 
 ```
-git clone https://github.com/PatMoore-Othrwy/ModeSwitch.git
+git clone https://github.com/Othrwy/ModeSwitch.git
 cd ModeSwitch
 py -3.11 -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
@@ -36,6 +36,21 @@ ModeSwitch appears as a ribbon on the right edge of your main screen, with an ic
 5. **Launch when Windows starts** is in Settings. It also starts ModeSwitch when you unlock or wake the laptop.
 
 Rest the mouse on any button for a moment to see what it does.
+
+## Updating
+
+ModeSwitch checks GitHub for a new version when it starts and every few hours. When there is one, a notification lists what has changed: right-click the tray icon and choose **Update now**, and it downloads the update and restarts itself. **Check for updates** in the same menu looks straight away.
+
+If you installed before this was added, update by hand once, from the ModeSwitch folder:
+
+```
+git pull
+.venv\Scripts\pip install -r requirements.txt
+```
+
+Then right-click the tray icon, choose **Exit**, and start ModeSwitch again. A copy whose files you have edited yourself is not updated automatically; it says so, and you can `git pull` by hand.
+
+**Refresh** in the tray menu restarts ModeSwitch, if it ever needs a fresh start.
 
 ## Your data
 

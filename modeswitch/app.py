@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QMessageBox
 )
 
-from modeswitch import autostart, calendar_sync, days, theme
+from modeswitch import autostart, calendar_sync, days, theme, updater
 from modeswitch.app_icon import app_icon
 from modeswitch.db import models
 from modeswitch.db.schema import init_db
@@ -22,6 +22,45 @@ from modeswitch.windows.ribbon import RibbonWindow
 
 
 SYNC_INTERVAL_MS = 5 * 60_000
+UPDATE_INTERVAL_MS = 6 * 60 * 60_000   # look for a new version every 6 hours
+
+
+class UpdateChecker(QObject):
+    """Looks for a new version on GitHub, and applies it, on a background thread."""
+    checked = pyqtSignal(object, bool)   # UpdateInfo or None, and whether the user asked
+    failed = pyqtSignal(str, bool)       # message, and whether the user asked
+    applied = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._busy = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(lambda: self.check(user_started=False))
+        self._timer.start(UPDATE_INTERVAL_MS)
+        QTimer.singleShot(30_000, lambda: self.check(user_started=False))
+
+    def check(self, user_started: bool) -> None:
+        self._run(lambda: self.checked.emit(updater.check(), user_started), user_started)
+
+    def apply(self) -> None:
+        def job():
+            updater.apply()
+            self.applied.emit()
+        self._run(job, True)
+
+    def _run(self, job, user_started: bool) -> None:
+        if self._busy:
+            return
+        self._busy = True
+
+        def work():
+            try:
+                job()
+            except Exception as e:
+                self.failed.emit(str(e), user_started)
+            finally:
+                self._busy = False
+        threading.Thread(target=work, daemon=True).start()
 
 
 class CalendarSyncer(QObject):
@@ -112,6 +151,12 @@ class App:
         self.calendar.synced.connect(self.ribbon.on_meetings_synced)
         self.calendar.status_changed.connect(self._on_calendar_status)
         theme.hub().sync_requested.connect(lambda: self.calendar.sync(user_started=True))
+        self._update: updater.UpdateInfo | None = None
+        if updater.available():
+            self.updates = UpdateChecker(self.qapp)
+            self.updates.checked.connect(self._on_update_checked)
+            self.updates.failed.connect(self._on_update_failed)
+            self.updates.applied.connect(self._refresh)
         if show_guide:
             QTimer.singleShot(1500, self._show_guide)
 
@@ -144,6 +189,11 @@ class App:
         guide_action.triggered.connect(self._show_guide)
 
         menu.addSeparator()
+
+        self._update_action = menu.addAction("Check for updates")
+        self._update_action.setToolTip("Look on GitHub for a newer version of ModeSwitch")
+        self._update_action.triggered.connect(self._on_update_clicked)
+        self._update_action.setVisible(updater.available())
 
         refresh_action = menu.addAction("Refresh")
         refresh_action.setToolTip("Restart ModeSwitch to pick up changes, without closing"
@@ -194,6 +244,54 @@ class App:
     def _on_settings_changed(self) -> None:
         theme.apply(self.qapp)
         self.ribbon.on_settings_changed()
+
+    # ------------------------------------------------------------------
+    # Updates
+    # ------------------------------------------------------------------
+    def _on_update_clicked(self) -> None:
+        if self._update and not self._update.blocked:
+            self._update_action.setText("Updating…")
+            self._update_action.setEnabled(False)
+            self.updates.apply()   # restarts when done
+        else:
+            self.updates.check(user_started=True)
+
+    def _on_update_checked(self, info, user_started: bool) -> None:
+        previous, self._update = self._update, info
+        if not info:
+            self._update_action.setText("Check for updates")
+            self._update_action.setToolTip("Look on GitHub for a newer version of ModeSwitch")
+            if user_started:
+                self._tray.showMessage("ModeSwitch", "ModeSwitch is up to date",
+                                       QSystemTrayIcon.MessageIcon.Information)
+            return
+        noun = "change" if info.behind == 1 else "changes"
+        listed = "\n".join(f"• {c}" for c in info.changes[:5])
+        if info.behind > 5:
+            listed += f"\n…and {info.behind - 5} more"
+        if info.blocked:
+            self._update_action.setText(f"Update available ({info.behind} {noun})")
+            self._update_action.setToolTip(info.blocked)
+            if user_started:
+                self._tray.showMessage("ModeSwitch", f"{info.blocked}. Run git pull by hand.",
+                                       QSystemTrayIcon.MessageIcon.Warning)
+            return
+        self._update_action.setText(f"Update now ({info.behind} {noun})")
+        self._update_action.setToolTip(f"Download the new version and restart:\n{listed}")
+        if not user_started and previous and previous.behind == info.behind:
+            return   # already announced; the 6-hourly check need not repeat it
+        self._tray.showMessage(
+            "ModeSwitch update available",
+            f"{listed}\n\nRight-click the tray icon and choose Update now.",
+            QSystemTrayIcon.MessageIcon.Information)
+
+    def _on_update_failed(self, message: str, user_started: bool) -> None:
+        # A background check that fails (offline, signed out of GitHub) stays quiet
+        self._update_action.setText("Check for updates")
+        self._update_action.setEnabled(True)
+        if user_started:
+            self._tray.showMessage("ModeSwitch", f"Could not update: {message}",
+                                   QSystemTrayIcon.MessageIcon.Warning)
 
     def _refresh(self) -> None:
         """Close and start again. Nothing is lost: every edit is saved as it is made,
