@@ -7,4 +7,7 @@ if __name__ == "__main__":
         sys.exit(0)   # already running: autostart fires on every unlock and wake
     from modeswitch.app import App
     app = App()
-    sys.exit(app.run())
+    code = app.run()
+    if app.restart:
+        autostart.relaunch()
+    sys.exit(code)

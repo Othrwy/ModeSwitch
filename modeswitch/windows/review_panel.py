@@ -43,12 +43,14 @@ COLUMN_GAP = 8
 WEEK_GAP = 6
 KIND_ROWS = [(LUNCH, "Lunch"), (COMMUTE, "Commute")]   # fixed rows in the projects table
 # Projects table columns
-COL_ARROW, COL_CODE, COL_NAME, COL_WORK, COL_COLOUR, COL_DELETE = range(6)
+COL_ARROW, COL_CODE, COL_NAME, COL_WORK, COL_PAID, COL_COLOUR, COL_DELETE = range(7)
 HEADER_H = 22
 COLUMN_WIDTH = {"full": RIBBON_WIDTH, "narrow": NARROW_WIDTH, "compact": COMPACT_WIDTH}
 
 
 MIX = "mix"   # the tracker's all-projects view
+HOLIDAY = "holiday"          # the all-projects view's series for holidays
+HOLIDAY_COLOR = "#ffd34d"    # the sun button's gold
 PERIODS = [("week", "Week"), ("fortnight", "Fortnight"), ("month", "Month"),
            ("all", "All time")]
 DEFAULT_WEEKS_BACK = 3   # this week, last week (narrow) and two more (slider only)
@@ -305,17 +307,21 @@ class ReviewPanel(QWidget):
         group = QGroupBox("Projects")
         vbox = QVBoxLayout(group)
         self._proj_table = QTableWidget()
-        self._proj_table.setColumnCount(6)
-        self._proj_table.setHorizontalHeaderLabels(["", "Code", "Name", "Work", "Colour", ""])
+        self._proj_table.setColumnCount(7)
+        self._proj_table.setHorizontalHeaderLabels(["", "Code", "Name", "Work", "Paid", "Colour", ""])
         self._proj_table.horizontalHeaderItem(COL_WORK).setToolTip(
             "Ticked: time on the project counts as work. Untick for a Break project: its "
             "time is off the clock like lunch, and pushes the end of day later")
+        self._proj_table.horizontalHeaderItem(COL_PAID).setToolTip(
+            "Ticked: time on the project is paid work and counts in the All projects"
+            " totals. Untick to leave it out, such as a Break project")
         self._proj_table.horizontalHeader().setSectionResizeMode(
             COL_NAME, QHeaderView.ResizeMode.Stretch)
         self._proj_table.verticalHeader().setVisible(False)
         self._proj_table.setColumnWidth(COL_ARROW, 26)
         self._proj_table.setColumnWidth(COL_CODE, 60)
         self._proj_table.setColumnWidth(COL_WORK, 40)
+        self._proj_table.setColumnWidth(COL_PAID, 40)
         self._proj_table.setColumnWidth(COL_COLOUR, 60)
         self._proj_table.setColumnWidth(COL_DELETE, 30)
         self._proj_table.itemChanged.connect(self._on_project_item_changed)
@@ -351,7 +357,8 @@ class ReviewPanel(QWidget):
         row.addWidget(self._style)
         self._period = QComboBox()
         self._period.setToolTip("Total each week, fortnight or month, or all time as an"
-                                " average day. Covers every day logged, not just those above")
+                                " average day. Covers every day logged, not just those above."
+                                " Only paid projects count; a holiday counts as a full day")
         for key, label in PERIODS:
             self._period.addItem(label, key)
         self._period.activated.connect(self._on_period_chosen)
@@ -629,14 +636,26 @@ class ReviewPanel(QWidget):
             self._series_hint.setText(f"time on {code} each day")
 
     def _update_mix(self) -> None:
-        """Every project's time, totalled by period from every day logged (holidays
-        and today left out), or all time as an average day."""
+        """Every paid project's time, totalled by period from every day logged (today
+        left out), or all time as an average day. A holiday on a working day counts as
+        that day's working length."""
         period = self._period.currentData() or "week"
         today = date.today()
-        minutes: dict[date, dict] = {}   # day -> project id -> minutes
+        projects = {p.id: p for p in models.get_all_projects()}
+        minutes: dict[date, dict] = {}   # day -> project id (or HOLIDAY) -> minutes
         for date_str, project_id, start, end in models.get_work_blocks_before(today.isoformat()):
+            proj = projects.get(project_id)
+            if proj and not proj.is_paid:
+                continue
             per_project = minutes.setdefault(date.fromisoformat(date_str), {})
             per_project[project_id] = per_project.get(project_id, 0) + to_min(end) - to_min(start)
+        working_days = models.get_day_list_setting("working_days")
+        holidays = 0
+        for date_str in models.get_holidays_before(today.isoformat()):
+            d = date.fromisoformat(date_str)
+            if d.isoweekday() in working_days:
+                minutes[d] = {HOLIDAY: days.target_minutes(d)}
+                holidays += 1
 
         this_monday = today - timedelta(days=today.weekday())
 
@@ -670,20 +689,32 @@ class ReviewPanel(QWidget):
         for d, per_project in minutes.items():
             entry = periods[bucket(d)]
             entry.days += 1
+            if d.isoweekday() in working_days:
+                entry.logged += 1
             for project_id, mins in per_project.items():
                 entry.minutes[project_id] = entry.minutes.get(project_id, 0) + mins
                 totals[project_id] = totals.get(project_id, 0) + mins
+        if period != "all":
+            # How many working days each period has, so a part week counts as part
+            for start, entry in periods.items():
+                d, end = start, following(start)
+                while d < end:
+                    entry.possible += d.isoweekday() in working_days
+                    d += timedelta(days=1)
 
-        projects = {p.id: p for p in models.get_all_projects()}
         series = []
-        for key in sorted(totals, key=lambda k: (k is None, -totals[k])):
+        for key in sorted(totals, key=lambda k: (k is None, k == HOLIDAY, -totals[k])):
             proj = projects.get(key)
-            if proj:
+            if key == HOLIDAY:
+                series.append(MixSeries(key, "Holiday", "Holiday", HOLIDAY_COLOR))
+            elif proj:
                 series.append(MixSeries(key, proj.code, f"{proj.code} {proj.name}", proj.color))
             else:
                 series.append(MixSeries(key, "Unassigned", "Unassigned", theme.track))
         note = (f"{len(minutes)} days since {min(minutes).strftime('%a %d %b %Y')}"
                 if minutes else "")
+        if holidays:
+            note += f", {holidays} on holiday"
         unit = dict(PERIODS)[period].lower()
         self._mix.set_data(list(periods.values()), series, self._style.currentData(),
                            per_day=period == "all", unit=unit, note=note)
@@ -721,6 +752,7 @@ class ReviewPanel(QWidget):
             row = self._add_row(proj.id, proj.code, proj.name)
             self._arrow_button(row, proj, len(subtasks.get(proj.id, [])))
             self._work_box(row, proj)
+            self._paid_box(row, proj)
             self._colour_button(row, proj.color, lambda _, p=proj: self._pick_color(p))
             self._delete_button(row, "Delete this project",
                                 lambda _, p=proj: self._delete_project(p))
@@ -765,6 +797,15 @@ class ReviewPanel(QWidget):
         item.setToolTip(f"{proj.code} counts as work" if proj.counts_as_work else
                         f"{proj.code} is a break: off the clock, like lunch")
         self._proj_table.setItem(row, COL_WORK, item)
+
+    def _paid_box(self, row: int, proj) -> None:
+        """Ticked when time on the project is paid work and counts in the totals."""
+        item = QTableWidgetItem()
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(Qt.CheckState.Checked if proj.is_paid else Qt.CheckState.Unchecked)
+        item.setToolTip(f"{proj.code} is paid work, counted in the totals" if proj.is_paid else
+                        f"{proj.code} is not paid work, left out of the totals")
+        self._proj_table.setItem(row, COL_PAID, item)
 
     def _colour_button(self, row: int, color: str, on_click) -> None:
         b = QPushButton()
@@ -826,6 +867,8 @@ class ReviewPanel(QWidget):
             return   # Lunch and Commute rows
         if item.column() == COL_WORK:
             models.update_project(pid, counts_as_work=item.checkState() == Qt.CheckState.Checked)
+        elif item.column() == COL_PAID:
+            models.update_project(pid, is_paid=item.checkState() == Qt.CheckState.Checked)
         elif item.column() == COL_CODE:
             code = text.upper()
             taken = {p.code for p in models.get_all_projects() if p.id != pid}
