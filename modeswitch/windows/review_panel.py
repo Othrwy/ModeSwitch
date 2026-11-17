@@ -689,9 +689,18 @@ class ReviewPanel(QWidget):
         for d, per_project in minutes.items():
             entry = periods[bucket(d)]
             entry.days += 1
+            if d.isoweekday() in working_days:
+                entry.logged += 1
             for project_id, mins in per_project.items():
                 entry.minutes[project_id] = entry.minutes.get(project_id, 0) + mins
                 totals[project_id] = totals.get(project_id, 0) + mins
+        if period != "all":
+            # How many working days each period has, so a part week counts as part
+            for start, entry in periods.items():
+                d, end = start, following(start)
+                while d < end:
+                    entry.possible += d.isoweekday() in working_days
+                    d += timedelta(days=1)
 
         series = []
         for key in sorted(totals, key=lambda k: (k is None, k == HOLIDAY, -totals[k])):

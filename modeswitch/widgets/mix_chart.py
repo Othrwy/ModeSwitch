@@ -46,9 +46,19 @@ class MixPeriod:
     name: str                   # in the tooltip: "Week of Mon 02 Nov"
     days: int                   # days counted
     minutes: dict = field(default_factory=dict)   # series key -> minutes
+    logged: int = 0             # working days counted (holidays included)
+    possible: int = 0           # working days in the period; 0 if not known
 
     def total(self) -> int:
         return sum(self.minutes.values())
+
+    def share(self) -> float:
+        """How much of the period was logged: a week with one of four working days
+        logged is a quarter of a week. A period whose days were all off the working
+        week counts as a whole one."""
+        if not self.possible or not self.logged:
+            return 1.0
+        return min(1.0, self.logged / self.possible)
 
 
 def _nice_step(top_hours: float) -> int:
@@ -133,7 +143,10 @@ class MixChart(QWidget):
             days = sum(period.days for period in counted)
             headline = f"{fmt_duration(round(total / days)) or '0m'} on an average day"
         else:
-            headline = (f"{fmt_duration(round(total / len(counted))) or '0m'}"
+            # Part periods (this week so far, the week logging started) count as the
+            # share of their working days logged, so they do not drag the average down
+            periods = sum(period.share() for period in counted)
+            headline = (f"{fmt_duration(round(total / periods)) or '0m'}"
                         f" a {self._unit} on average")
         p.setFont(self._head_font)
         p.setPen(theme.q("text"))
@@ -278,7 +291,11 @@ class MixChart(QWidget):
             text = f"{period.name}\n{series.name}: "
             if self._per_day:
                 return text + f"{fmt_duration(round(minutes / period.days))} a day ({share}%)"
-            return (text + f"{fmt_duration(minutes)} ({share}%)"
-                    f"\n{fmt_duration(round(minutes / period.days)) or '0m'} a day"
-                    f" over {period.days} day{'s' if period.days != 1 else ''}")
+            text += (f"{fmt_duration(minutes)} ({share}%)"
+                     f"\n{fmt_duration(round(minutes / period.days)) or '0m'} a day"
+                     f" over {period.days} day{'s' if period.days != 1 else ''}")
+            if period.share() < 1:
+                text += (f"\nPart {self._unit}: {period.logged} of {period.possible}"
+                         " working days logged")
+            return text
         return ""

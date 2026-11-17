@@ -1,6 +1,6 @@
 # ModeSwitch — Specification
 
-**Status:** v2 ribbon, timeline and review panel built (2026-10-13). Minimise, per-day project totals in review, and autostart added (2026-10-20). Ribbon reserves its screen space and can be dragged to any monitor edge (2026-10-21). Outlook sync working through classic Outlook (2026-10-22); Microsoft Graph route built but waiting on IT admin consent. Themes, fuller Settings and a multi-purpose tracker chart added (2026-10-27). End of day locked to the 8h mark, with a hollow node marking the mark, and Break projects that count like lunch (2026-11-02). Autostart on wake and unlock (2026-11-03). Minimise from the screen corner and edge; tracker bar view and all-projects view; overlapping meetings, Connect to Outlook page and Getting started guide (2026-11-05). Paid toggle per project, and holidays counted in the All projects totals (2026-11-16). Last updated 2026-11-16.
+**Status:** v2 ribbon, timeline and review panel built (2026-10-13). Minimise, per-day project totals in review, and autostart added (2026-10-20). Ribbon reserves its screen space and can be dragged to any monitor edge (2026-10-21). Outlook sync working through classic Outlook (2026-10-22); Microsoft Graph route built but waiting on IT admin consent. Themes, fuller Settings and a multi-purpose tracker chart added (2026-10-27). End of day locked to the 8h mark, with a hollow node marking the mark, and Break projects that count like lunch (2026-11-02). Autostart on wake and unlock (2026-11-03). Minimise from the screen corner and edge; tracker bar view and all-projects view; overlapping meetings, Connect to Outlook page and Getting started guide (2026-11-05). Paid toggle per project, and holidays counted in the All projects totals (2026-11-16). Last updated 2026-11-17.
 
 This file is the source of truth for what ModeSwitch is meant to do. Read it before changing the code. When a decision is made or a preference stated, record it here (section 11) in the same change as the code.
 
@@ -227,6 +227,7 @@ How on/off times are detected **[assumed]**:
   - It covers every logged day before today, not just the columns shown. Lunch and commute are left out, and so are unpaid projects such as Break (P11). Unassigned time is included.
   - **[decided]** Holiday time is included in the totals, so a week with a holiday is not counted short. **[assumed]** A holiday on a working day counts as that day's working length (D5a), shown as a gold **Holiday** segment or slice, and counts as a day for the all-time average. Holidays on non-working days are not counted. The note top right says how many days were holidays.
   - Week, fortnight and month show each period's total; all time shows an average day (total ÷ days logged). The newest fortnight is this week and last week.
+  - **[decided]** The "a week on average" headline must not be skewed by part weeks, such as this week so far. **[assumed]** Each period counts as the share of its working days that were logged (holidays included), so a week and a day on a Mon–Thu week is 1¼ weeks. Days logged outside the working days add their time but not to the share. Unlogged working days inside a period are treated as missing, not as zero. Hovering a part period says how many of its working days were logged. The same applies to fortnights and months.
   - Bars: one stack per period, the biggest project overall at the foot. Pies: one per period, as many of the newest as fit. Empty periods between logged ones show as gaps.
   - A legend on the right lists the projects; hovering a segment or slice gives its time, share and average a day.
   - The style and period are remembered (`chart_mix_style`, `chart_period`).
@@ -272,6 +273,7 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 
 | Date | Decision |
 |---|---|
+| 2026-11-17 | The All projects weekly (fortnightly, monthly) average counts a part period by the share of its working days logged, so this week so far no longer counts as a whole week (V9d). |
 | 2026-11-16 | Each project has a Paid toggle; unpaid projects such as Break are left out of the All projects totals (P11, V9d). Holidays count toward those totals as a full working day, so the weekly average is not dragged down by time off (V9d). |
 | 2026-11-10 | Hovering a meeting always shows its start time above the title, not only where meetings overlap (T15b). |
 | 2026-11-05 | Overlapping meetings stack their translucency, with hairlines at their edges and side-by-side strips; hovering lists every meeting under the mouse with its times and outlines each, so none hides another (T15b). For sharing with colleagues: a Connect to Outlook setup page in Settings (O3e), a Getting started guide (V10) and a README with install steps. |
