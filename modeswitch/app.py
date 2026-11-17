@@ -91,6 +91,7 @@ class App:
         self.qapp.setApplicationName("ModeSwitch")
         self.qapp.setWindowIcon(app_icon())
 
+        self.restart = False   # set by Refresh: start a fresh copy once this one exits
         init_db()
         autostart.migrate_shortcut()
         theme.apply(self.qapp)
@@ -121,6 +122,7 @@ class App:
         tray.setToolTip("ModeSwitch")
 
         menu = QMenu()
+        menu.setToolTipsVisible(True)
         show_action = menu.addAction("Show")
         show_action.triggered.connect(self._show_ribbon)
 
@@ -142,6 +144,11 @@ class App:
         guide_action.triggered.connect(self._show_guide)
 
         menu.addSeparator()
+
+        refresh_action = menu.addAction("Refresh")
+        refresh_action.setToolTip("Restart ModeSwitch to pick up changes, without closing"
+                                  " it and starting it again by hand")
+        refresh_action.triggered.connect(self._refresh)
 
         exit_action = menu.addAction("Exit")
         exit_action.triggered.connect(self._exit)
@@ -187,6 +194,12 @@ class App:
     def _on_settings_changed(self) -> None:
         theme.apply(self.qapp)
         self.ribbon.on_settings_changed()
+
+    def _refresh(self) -> None:
+        """Close and start again. Nothing is lost: every edit is saved as it is made,
+        and the end of day is left as it is, so there is no "Save out time?" question."""
+        self.restart = True
+        self.qapp.quit()
 
     def _exit(self) -> None:
         if not self.ribbon.end_time_is_set():

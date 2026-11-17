@@ -27,6 +27,7 @@ What changes in v2 **[decided]**: the UI becomes a vertical ribbon with a dragga
 - Windows 11, single user, single machine.
 - Python 3.11, PyQt6, SQLite, pywin32 (also reads the calendar through classic Outlook), msal (Microsoft sign-in, for the dormant Graph route). Packaged with PyInstaller. **[assumed: v2 keeps this stack]**
 - Database at `%LOCALAPPDATA%\ModeSwitch\modeswitch.db`.
+- **[decided]** The tray menu has **Refresh**, which restarts ModeSwitch so changes are picked up without closing and starting it by hand. **[assumed]** It closes the app and launches a fresh copy the same way autostart does, handing over the single-instance lock. It does not ask "Save out time?", since edits are saved as they are made and a restart is not the end of the day.
 - Runs from the system tray. **[decided]** The tray and window icon is two green triangles, drawn from Patrick's reference picture. The top one sits against the right edge pointing left, the bottom one against the left edge pointing right, and the dark gap between them makes a rough S. **[assumed]** Green `#26e600` with rounded corners on a dark (`#191a1b`) rounded tile, so it shows on light and dark taskbars. Drawn in code at each size, so it stays sharp at any display scaling.
 - **[decided]** Starts automatically when Patrick logs in to Windows, and also when the laptop is unlocked or wakes from sleep or hibernation, if it is not already running (added 2026-11-03: the laptop often sleeps instead of shutting down, so there is no fresh logon). Starting on wake must not change how the start of day is found (D1); it does not, because the start time comes from the event log, not from when the app opens. Toggled in Settings. **[assumed]** Done with a Windows scheduled task named `ModeSwitch` for this user (logon, unlock and Power-Troubleshooter event 1 triggers; ignores a trigger while already running; runs on battery). It replaced the Startup-folder shortcut, and an old shortcut is swapped for the task on launch. A named mutex makes any second copy exit at once. When run from source the task launches `.venv\Scripts\pythonw.exe main.py`, so no console window is left open.
 
@@ -273,6 +274,7 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 
 | Date | Decision |
 |---|---|
+| 2026-11-17 | The tray menu has Refresh, which restarts ModeSwitch to pick up changes (section 2). |
 | 2026-11-17 | The All projects weekly (fortnightly, monthly) average counts a part period by the share of its working days logged, so this week so far no longer counts as a whole week (V9d). |
 | 2026-11-16 | Each project has a Paid toggle; unpaid projects such as Break are left out of the All projects totals (P11, V9d). Holidays count toward those totals as a full working day, so the weekly average is not dragged down by time off (V9d). |
 | 2026-11-10 | Hovering a meeting always shows its start time above the title, not only where meetings overlap (T15b). |
@@ -320,7 +322,7 @@ Newest first. Add a line whenever a decision is made or an open question is answ
 
 | File | Role |
 |---|---|
-| `main.py`, `modeswitch/app.py` | Entry point, tray icon (Show / Hide / Review / Sync calendar now / Settings / Exit), background calendar sync, applying settings changes, save-out-time prompt on exit |
+| `main.py`, `modeswitch/app.py` | Entry point, tray icon (Show / Hide / Review / Sync calendar now / Settings / Getting started / Refresh / Exit), background calendar sync, applying settings changes, save-out-time prompt on exit |
 | `modeswitch/theme.py` | Colour themes: the tokens, dark and light presets, derived colours, colour maths (shades, harmonies, contrast), and the app-wide stylesheet |
 | `modeswitch/day_model.py` | The rules of the timeline: nodes, sections, move, split, delete, commute, credits, titles, title rules. No Qt, no database |
 | `modeswitch/days.py` | Loads, creates and saves whole days; backfills forgotten end times |

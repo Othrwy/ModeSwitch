@@ -37,6 +37,20 @@ def single_instance() -> bool:
     return ctypes.get_last_error() != 183   # ERROR_ALREADY_EXISTS
 
 
+def relaunch() -> None:
+    """Start a fresh copy of the app, for Refresh in the tray menu. Called as this
+    copy exits: the single-instance name is let go first, so the new copy can claim it."""
+    global _mutex
+    if _mutex:
+        import ctypes
+        ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(_mutex))
+        _mutex = None
+    program, args, cwd = _command()
+    command = [program] if not args else [program, args.strip('"')]
+    subprocess.Popen(command, cwd=cwd, creationflags=_NO_WINDOW | getattr(
+        subprocess, "DETACHED_PROCESS", 0))
+
+
 def _schtasks(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["schtasks", *args], capture_output=True, text=True,
                           creationflags=_NO_WINDOW)
